@@ -7,7 +7,13 @@ SECRET_KEY = 'your-secret-key'  # change in production
 
 DEBUG = True
 
-ALLOWED_HOSTS = []
+# Updated ALLOWED_HOSTS for network access
+ALLOWED_HOSTS = [
+    'localhost',
+    '127.0.0.1',
+    '192.168.1.221',  # Your computer's IP address
+    '*',  # Allow all for development (remove in production)
+]
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -23,6 +29,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',  # Moved to TOP
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -30,19 +37,19 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
-    
 ]
 
-# CORS settings
+# Updated CORS settings for network access
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5174",
     "http://127.0.0.1:5174",
+    "http://192.168.1.243:5174",
 ]
 
+# Alternative: Allow all origins during development (easier but less secure)
+CORS_ALLOW_ALL_ORIGINS = True
+
 CORS_ALLOW_CREDENTIALS = True
-
-
 
 ROOT_URLCONF = 'lab_project.urls'
 
@@ -88,7 +95,6 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
-
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 AUTH_USER_MODEL = 'myapp.User'

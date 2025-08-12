@@ -1,12 +1,17 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
-from .models import User, Department, Division, Customer, Sample, Test, Payment, Result
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from .models import User, Department, Division, Customer, Sample, Test, Payment, Result
+
 class LoginSerializer(serializers.Serializer):
-    # Accept either email or username
-    email = serializers.CharField(required=False, allow_blank=True)
+    """
+    Serializer to handle user login.
+    Accepts either a username or an email along with a password.
+    """
     username = serializers.CharField(required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
     password = serializers.CharField(write_only=True)
 
     def validate(self, data):
@@ -14,19 +19,28 @@ class LoginSerializer(serializers.Serializer):
         email = data.get('email')
         password = data.get('password')
 
-        user = None
-        if username:
-            user = authenticate(username=username, password=password)
-        elif email:
-            # try to find user by email then authenticate using username
-            try:
-                user_obj = User.objects.get(email=email)
-                user = authenticate(username=user_obj.username, password=password)
-            except User.DoesNotExist:
-                user = None
+        # Ensure either username or email is provided
+        if not (username or email):
+            raise serializers.ValidationError("A username or email is required.")
+        if not password:
+            raise serializers.ValidationError("A password is required.")
 
+        user = None
+        # Authenticate using the provided username
+        if username:
+            user = authenticate(request=self.context.get('request'), username=username, password=password)
+        # Or, authenticate using the provided email
+        elif email:
+            try:
+                # Find the user by email first, then authenticate with their username
+                user_obj = User.objects.get(email__iexact=email)
+                user = authenticate(request=self.context.get('request'), username=user_obj.username, password=password)
+            except ObjectDoesNotExist:
+                pass # The user remains None if not found
+
+        # Handle authentication failures
         if user is None:
-            raise serializers.ValidationError("Invalid email/username or password.")
+            raise serializers.ValidationError("Invalid credentials provided.")
         if not user.is_active:
             raise serializers.ValidationError("User account is disabled.")
 
