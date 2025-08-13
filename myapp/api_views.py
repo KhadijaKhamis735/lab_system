@@ -33,6 +33,33 @@ def login_api(request):
         }
     }, status=status.HTTP_200_OK)
 
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def admin_dashboard(request):
+    if request.user.role != 'Admin':
+        return Response(
+            {'success': False, 'message': 'Access denied. Admin role required.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    # Admin dashboard could show overall system stats
+    total_users = User.objects.count()
+    total_departments = Department.objects.count()
+    total_samples = Sample.objects.count()
+    total_tests = Test.objects.count()
+
+    return Response({
+        'success': True,
+        'role': 'Admin',
+        'stats': {
+            'total_users': total_users,
+            'total_departments': total_departments,
+            'total_samples': total_samples,
+            'total_tests': total_tests,
+        }
+    })
+
+
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def logout_api(request):

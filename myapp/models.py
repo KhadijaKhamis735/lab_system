@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
+from django.utils import timezone
 
 class User(AbstractUser):
     ROLE_CHOICES = (
@@ -48,7 +49,7 @@ class Sample(models.Model):
         ('Completed', 'Completed'),
         ('Sent to DPF', 'Sent to DPF'),
     )
-    control_number = models.CharField(max_length=50, unique=True)
+    control_number = models.CharField(max_length=50, unique=True, blank=True)
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
     registrar = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='registered_samples')
     date_received = models.DateField(auto_now_add=True)
@@ -57,6 +58,17 @@ class Sample(models.Model):
 
     def __str__(self):
         return self.control_number
+
+    def save(self, *args, **kwargs):
+        if not self.control_number:
+            year = timezone.now().year
+            last_sample = Sample.objects.filter(control_number__startswith=f'TEST-{year}-').order_by('control_number').last()
+            if last_sample:
+                last_number = int(last_sample.control_number.split('-')[-1])
+                self.control_number = f'TEST-{year}-{last_number + 1:03d}'
+            else:
+                self.control_number = f'TEST-{year}-001'
+        super().save(*args, **kwargs)
 
 class Test(models.Model):
     sample = models.ForeignKey(Sample, on_delete=models.CASCADE)

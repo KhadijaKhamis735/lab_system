@@ -103,3 +103,20 @@ class ResultSerializer(serializers.ModelSerializer):
     class Meta:
         model = Result
         fields = '__all__'
+
+# Combined Serializer for Registration
+class RegisterSampleSerializer(serializers.Serializer):
+    customer = CustomerSerializer()
+    sample = SampleSerializer(required=False)
+
+    def create(self, validated_data):
+        customer_data = validated_data.pop('customer')
+        customer, created = Customer.objects.get_or_create(**customer_data)
+        sample_data = validated_data.get('sample', {})
+        sample_data['customer'] = customer
+        sample_data['registrar'] = self.context['request'].user
+        sample = Sample.objects.create(**sample_data)
+        # Create initial payment based on number of tests (placeholder logic)
+        tests_count = validated_data.get('tests_count', 1)  # Default to 1 test
+        Payment.objects.create(sample=sample, amount_due=1000 * tests_count)
+        return sample
