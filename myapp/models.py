@@ -1,6 +1,12 @@
+from decimal import Decimal
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils import timezone
+from phonenumber_field.modelfields import PhoneNumberField
+import logging
+from django.db import transaction
+
+logger = logging.getLogger(__name__)
 
 class User(AbstractUser):
     ROLE_CHOICES = (
@@ -35,17 +41,26 @@ class Division(models.Model):
 
 class Customer(models.Model):
     name = models.CharField(max_length=200)
-    contact_info = models.TextField(blank=True)
+    email = models.EmailField(unique=True, null=True, blank=True)
+    phone_number = PhoneNumberField(null=True, blank=True)
+    address = models.TextField(null=True, blank=True)
 
     def __str__(self):
         return self.name
 
+class Ingredient(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+    price = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+
+    def __str__(self):
+        return f"{self.name} ({self.price}/=)"
+
 class Sample(models.Model):
     STATUS_CHOICES = (
         ('Registered', 'Registered'),
+        ('Awaiting HOD Review', 'Awaiting HOD Review'),
+        ('Awaiting HODv Assignment', 'Awaiting HODv Assignment'),
         ('In Progress', 'In Progress'),
-        ('Awaiting HOD Confirmation', 'Awaiting HOD Confirmation'),
-        ('Awaiting Director Confirmation', 'Awaiting Director Confirmation'),
         ('Completed', 'Completed'),
         ('Sent to DPF', 'Sent to DPF'),
     )
@@ -54,30 +69,59 @@ class Sample(models.Model):
     registrar = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='registered_samples')
     date_received = models.DateField(auto_now_add=True)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Registered')
-    assigned_to_hodv = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_samples')
+    assigned_to_hod = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='hod_samples')
+    assigned_to_hodv = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='hodv_samples')
+    assigned_to_technician = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='technician_samples')
+    sample_details = models.TextField(null=True, blank=True, help_text="Type of sample provided by the customer (e.g., Blood, Water)")
 
     def __str__(self):
         return self.control_number
 
     def save(self, *args, **kwargs):
         if not self.control_number:
-            year = timezone.now().year
-            last_sample = Sample.objects.filter(control_number__startswith=f'TEST-{year}-').order_by('control_number').last()
-            if last_sample:
-                last_number = int(last_sample.control_number.split('-')[-1])
-                self.control_number = f'TEST-{year}-{last_number + 1:03d}'
-            else:
-                self.control_number = f'TEST-{year}-001'
+            with transaction.atomic():
+                today = timezone.now().date()
+                date_prefix = today.strftime("%Y%m%d")
+                last_sample = Sample.objects.filter(control_number__startswith=date_prefix).order_by('control_number').last()
+                
+                if last_sample:
+                    last_number_str = last_sample.control_number.split('-')[-1]
+                    if last_number_str.isdigit():
+                        last_number = int(last_number_str)
+                        new_number = last_number + 1
+                    else:
+                        new_number = 1
+                else:
+                    new_number = 1
+                
+                self.control_number = f'{date_prefix}-{new_number:04d}'
         super().save(*args, **kwargs)
 
+    def submit_to_hod(self):
+        if not self.registrar or not self.registrar.department or not self.registrar.department.hod:
+            raise ValueError("Registrar, department, or HOD not assigned")
+        self.status = 'Awaiting HOD Review'
+        self.assigned_to_hod = self.registrar.department.hod
+        self.save()
+        logger.info(f"Sample {self.control_number} assigned to HOD: {self.assigned_to_hod.username}")
+
 class Test(models.Model):
+    STATUS_CHOICES = (
+        ('Pending', 'Pending'),
+        ('In Progress', 'In Progress'),
+        ('Completed', 'Completed'),
+    )
     sample = models.ForeignKey(Sample, on_delete=models.CASCADE)
-    test_type = models.CharField(max_length=100)
+    ingredient = models.ForeignKey(Ingredient, on_delete=models.CASCADE, null=True, blank=True)
     assigned_to = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True)
     results = models.TextField(blank=True, null=True)
+    price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Pending')
 
     def __str__(self):
-        return f"{self.test_type} for {self.sample.control_number}"
+        # CORRECTED: Safely access the ingredient name to prevent 'AttributeError'
+        ingredient_name = self.ingredient.name if self.ingredient else "N/A"
+        return f"{ingredient_name} test for {self.sample.control_number}"
 
 class Payment(models.Model):
     STATUS_CHOICES = (
@@ -86,7 +130,7 @@ class Payment(models.Model):
         ('Canceled', 'Canceled'),
     )
     sample = models.OneToOneField(Sample, on_delete=models.CASCADE)
-    amount_due = models.DecimalField(max_digits=10, decimal_places=2)
+    amount_due = models.DecimalField(max_digits=12, decimal_places=2)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pending')
     verified_by = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True)
     verification_date = models.DateTimeField(null=True, blank=True)
@@ -104,4 +148,6 @@ class Result(models.Model):
     sent_to_dpf = models.BooleanField(default=False)
 
     def __str__(self):
-        return f"Result for {self.sample.control_number} - {self.test.test_type}"
+        # CORRECTED: Safely access the ingredient name to prevent 'AttributeError'
+        ingredient_name = self.test.ingredient.name if self.test and self.test.ingredient else "N/A"
+        return f"Result for {self.sample.control_number} – {ingredient_name}"

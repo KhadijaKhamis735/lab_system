@@ -3,16 +3,20 @@ from rest_framework import generics, viewsets, permissions, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.db import transaction
+from django.core.exceptions import ObjectDoesNotExist
+import logging
+from datetime import date
+import random
 
-from .models import User, Department, Division, Customer, Sample, Test, Payment, Result
+from .models import User, Department, Division, Customer, Sample, Test, Payment, Result, Ingredient
 from .serializers import (
     LoginSerializer, UserSerializer, DepartmentSerializer, DivisionSerializer,
-    CustomerSerializer, SampleSerializer, TestSerializer, PaymentSerializer, ResultSerializer
+    CustomerSerializer, SampleDashboardSerializer, TestSerializer, PaymentSerializer, ResultSerializer,
+    IngredientSerializer, RegisterSampleSerializer
 )
 
-# Root
-def root_view(request):
-    return JsonResponse({'success': True, 'message': 'Welcome to the Lab API'})
+logger = logging.getLogger(__name__)
 
 # Authentication APIs
 @api_view(['POST'])
@@ -41,13 +45,10 @@ def admin_dashboard(request):
             {'success': False, 'message': 'Access denied. Admin role required.'},
             status=status.HTTP_403_FORBIDDEN
         )
-
-    # Admin dashboard could show overall system stats
     total_users = User.objects.count()
     total_departments = Department.objects.count()
     total_samples = Sample.objects.count()
     total_tests = Test.objects.count()
-
     return Response({
         'success': True,
         'role': 'Admin',
@@ -58,7 +59,6 @@ def admin_dashboard(request):
             'total_tests': total_tests,
         }
     })
-
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
@@ -90,34 +90,52 @@ def technician_dashboard(request):
 def hod_dashboard(request):
     if request.user.role != 'HOD':
         return Response({'success': False, 'message': 'Access denied. HOD role required.'}, status=status.HTTP_403_FORBIDDEN)
-    department_samples = Sample.objects.filter(status__in=['Registered', 'Awaiting HOD Confirmation'])
-    return Response({'success': True, 'role': 'HOD', 'department_samples': SampleSerializer(department_samples, many=True).data})
+    
+    department_samples = Sample.objects.filter(status__in=['Registered', 'Awaiting HOD Review'])
+    
+    return Response({
+        'success': True, 
+        'role': 'HOD', 
+        'department_samples': SampleDashboardSerializer(department_samples, many=True).data
+    })
 
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def registrar_dashboard(request):
     if request.user.role != 'Registrar':
         return Response({'success': False, 'message': 'Access denied. Registrar role required.'}, status=status.HTTP_403_FORBIDDEN)
+    
     recent_samples = Sample.objects.filter(registrar=request.user).order_by('-date_received')[:10]
-    return Response({'success': True, 'role': 'Registrar', 'recent_samples': SampleSerializer(recent_samples, many=True).data})
+    
+    return Response({
+        'success': True, 
+        'role': 'Registrar', 
+        'recent_samples': SampleDashboardSerializer(recent_samples, many=True).data
+    })
 
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def director_dashboard(request):
     if request.user.role != 'Director':
         return Response({'success': False, 'message': 'Access denied. Director role required.'}, status=status.HTTP_403_FORBIDDEN)
+        
     pending_samples = Sample.objects.filter(status='Awaiting Director Confirmation')
-    return Response({'success': True, 'role': 'Director', 'pending_approvals': SampleSerializer(pending_samples, many=True).data})
+    
+    return Response({
+        'success': True, 
+        'role': 'Director', 
+        'pending_approvals': SampleDashboardSerializer(pending_samples, many=True).data
+    })
 
 # Generic CRUD endpoints
 class SampleListCreateAPI(generics.ListCreateAPIView):
     queryset = Sample.objects.all()
-    serializer_class = SampleSerializer
+    serializer_class = SampleDashboardSerializer
     permission_classes = [permissions.IsAuthenticated]
 
 class SampleRetrieveUpdateDestroyAPI(generics.RetrieveUpdateDestroyAPIView):
     queryset = Sample.objects.all()
-    serializer_class = SampleSerializer
+    serializer_class = SampleDashboardSerializer
     permission_classes = [permissions.IsAuthenticated]
 
 class TestListCreateAPI(generics.ListCreateAPIView):
@@ -160,3 +178,68 @@ class ResultViewSet(viewsets.ModelViewSet):
     queryset = Result.objects.all()
     serializer_class = ResultSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+class IngredientViewSet(viewsets.ModelViewSet):
+    queryset = Ingredient.objects.all()
+    serializer_class = IngredientSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+# Sample Submission API
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+@transaction.atomic
+def submit_sample_api(request):
+    if request.user.role != 'Registrar':
+        return Response({'message': 'Access denied. Registrar role required.'}, status=status.HTTP_403_FORBIDDEN)
+
+    serializer = RegisterSampleSerializer(data=request.data, context={'request': request})
+    if serializer.is_valid():
+        sample = serializer.save()
+        
+        return Response({
+            'success': True,
+            'message': 'Sample and tests submitted successfully.',
+            'sample': SampleDashboardSerializer(sample).data,
+        }, status=status.HTTP_201_CREATED)
+    else:
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def verify_payment_api(request, control_number):
+    try:
+        sample = Sample.objects.get(control_number=control_number)
+        
+        # Mock payment verification logic
+        if random.random() > 0.5:
+            sample.payment.status = 'Verified'
+            sample.payment.save()
+            return Response({'success': True, 'message': 'Payment verified successfully.'})
+        else:
+            return Response({'success': False, 'message': 'Payment is still pending.'})
+    except (Sample.DoesNotExist, Payment.DoesNotExist):
+        return Response({'success': False, 'message': 'Sample or Payment not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def assign_to_hodv_api(request, sample_id):
+    # This is a placeholder. You need to add your own logic here.
+    return Response({'message': 'This endpoint is not yet implemented.'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def assign_to_technician_api(request, sample_id):
+    # This is a placeholder. You need to add your own logic here.
+    return Response({'message': 'This endpoint is not yet implemented.'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def department_activities(request):
+    # This is a placeholder. You need to add your own logic here.
+    return Response({'message': 'This endpoint is not yet implemented.'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def pending_samples(request):
+    # This is a placeholder. You need to add your own logic here.
+    return Response({'message': 'This endpoint is not yet implemented.'}, status=status.HTTP_501_NOT_IMPLEMENTED)

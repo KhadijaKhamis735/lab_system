@@ -11,7 +11,7 @@ DEBUG = True
 ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
-    '192.168.1.221',  # Your computer's IP address
+    '192.168.1.180',  # Your computer's IP address
     '*',  # Allow all for development (remove in production)
 ]
 
@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'myapp',
     'corsheaders',
+    'phonenumber_field',
 ]
 
 MIDDLEWARE = [
@@ -41,9 +42,9 @@ MIDDLEWARE = [
 
 # Updated CORS settings for network access
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5174",
-    "http://127.0.0.1:5174",
-    "http://192.168.1.243:5174",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://192.168.1.155:5173",
 ]
 
 # Alternative: Allow all origins during development (easier but less secure)
