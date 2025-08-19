@@ -154,6 +154,7 @@ class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+
 class DepartmentViewSet(viewsets.ModelViewSet):
     queryset = Department.objects.all()
     serializer_class = DepartmentSerializer
@@ -194,15 +195,34 @@ def submit_sample_api(request):
 
     serializer = RegisterSampleSerializer(data=request.data, context={'request': request})
     if serializer.is_valid():
-        sample = serializer.save()
+        try:
+            samples = serializer.save()
+            for sample in samples:
+                sample.registrar = request.user
+                sample.submit_to_hod()  # may raise ValueError if no HOD/Dept
+            payment = Payment.objects.get(sample=samples[0])  # Use first sample's payment
+            tests = Test.objects.filter(sample__in=samples)
+            logger.info(
+                f"Samples {', '.join(s.control_number for s in samples)} "
+                f"submitted by {request.user.username} "
+                f"to HOD: {samples[0].assigned_to_hod.username if samples[0].assigned_to_hod else 'None'}"
+            )
+            return Response({
+                'success': True,
+                'message': 'Samples and tests submitted successfully.',
+                'samples': SampleDashboardSerializer(samples, many=True).data,
+                'payment': PaymentSerializer(payment).data,
+                'tests': TestSerializer(tests, many=True).data
+            }, status=status.HTTP_201_CREATED)
         
-        return Response({
-            'success': True,
-            'message': 'Sample and tests submitted successfully.',
-            'sample': SampleDashboardSerializer(sample).data,
-        }, status=status.HTTP_201_CREATED)
+        except ValueError as e:
+            return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Unexpected error: {str(e)}")
+            return Response({'success': False, 'error': 'Unexpected server error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     else:
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
@@ -243,3 +263,10 @@ def department_activities(request):
 def pending_samples(request):
     # This is a placeholder. You need to add your own logic here.
     return Response({'message': 'This endpoint is not yet implemented.'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def ingredient_list_api(request):
+    ingredients = Ingredient.objects.all()
+    serializer = IngredientSerializer(ingredients, many=True)
+    return Response({'success': True, 'ingredients': serializer.data})

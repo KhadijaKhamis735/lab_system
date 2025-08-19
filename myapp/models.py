@@ -82,19 +82,19 @@ class Sample(models.Model):
             with transaction.atomic():
                 today = timezone.now().date()
                 date_prefix = today.strftime("%Y%m%d")
+                
+                # Filter by control numbers that start with the date prefix and are followed by a digit.
+                # This prevents issues with non-digit suffixes from old records.
                 last_sample = Sample.objects.filter(control_number__startswith=date_prefix).order_by('control_number').last()
                 
-                if last_sample:
-                    last_number_str = last_sample.control_number.split('-')[-1]
-                    if last_number_str.isdigit():
-                        last_number = int(last_number_str)
-                        new_number = last_number + 1
-                    else:
-                        new_number = 1
-                else:
-                    new_number = 1
+                new_number = 1
+                if last_sample and last_sample.control_number[len(date_prefix):].isdigit():
+                    last_number_str = last_sample.control_number[len(date_prefix):]
+                    last_number = int(last_number_str)
+                    new_number = last_number + 1
                 
-                self.control_number = f'{date_prefix}-{new_number:04d}'
+                # The only change is here: removed the hyphen
+                self.control_number = f'{date_prefix}{new_number:04d}'
         super().save(*args, **kwargs)
 
     def submit_to_hod(self):
