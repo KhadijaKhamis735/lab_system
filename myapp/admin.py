@@ -16,8 +16,8 @@ class CustomUserAdmin(UserAdmin):
 
 @admin.register(Ingredient)
 class IngredientAdmin(admin.ModelAdmin):
-    list_display = ('name', 'price')
-    list_filter = ('price',)
+    list_display = ('name', 'price', 'test_type')  # Added test_type
+    list_filter = ('test_type', 'price')  # Added test_type filter
     search_fields = ('name',)
 
 @admin.register(Test)

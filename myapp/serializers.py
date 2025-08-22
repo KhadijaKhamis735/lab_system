@@ -8,7 +8,6 @@ from .models import (
     User, Department, Division, Customer, Sample, Test, Payment, Result, Ingredient
 )
 
-# Core Serializers
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField(required=False, allow_blank=True)
     email = serializers.EmailField(required=False, allow_blank=True)
@@ -77,7 +76,7 @@ class CustomerSerializer(serializers.ModelSerializer):
 class IngredientSerializer(serializers.ModelSerializer):
     class Meta:
         model = Ingredient
-        fields = ['id', 'name', 'price']
+        fields = ['id', 'name', 'price', 'test_type']
 
 class TestSerializer(serializers.ModelSerializer):
     ingredient_name = serializers.CharField(source='ingredient.name', read_only=True)
@@ -105,7 +104,6 @@ class ResultSerializer(serializers.ModelSerializer):
         model = Result
         fields = '__all__'
 
-# Serializer for Dashboards (includes nested data)
 class SampleDashboardSerializer(serializers.ModelSerializer):
     customer = CustomerSerializer(read_only=True)
     tests = TestSerializer(many=True, read_only=True)
@@ -119,12 +117,7 @@ class SampleDashboardSerializer(serializers.ModelSerializer):
             'status', 'sample_details', 'tests', 'payment_status'
         ]
 
-# --- NEW: Serializer for a single sample submission ---
 class SampleSubmissionSerializer(serializers.Serializer):
-    """
-    A dedicated serializer for validating a single sample submission,
-    ensuring all required fields are present and valid.
-    """
     sample_details = serializers.CharField(allow_blank=False, required=True)
     selected_ingredients = serializers.ListField(
         child=serializers.IntegerField(),
@@ -133,14 +126,13 @@ class SampleSubmissionSerializer(serializers.Serializer):
         required=True
     )
 
-# --- CORRECTED: Main serializer for creating multiple samples ---
 class RegisterSampleSerializer(serializers.Serializer):
     customer = serializers.DictField(
         child=serializers.CharField(),
         required=True
     )
     samples = serializers.ListField(
-        child=SampleSubmissionSerializer(), # Now uses the dedicated serializer
+        child=SampleSubmissionSerializer(),
         allow_empty=False,
         required=True
     )
@@ -151,7 +143,6 @@ class RegisterSampleSerializer(serializers.Serializer):
         customer_data = validated_data.pop('customer')
         samples_data = validated_data.pop('samples')
 
-        # Try to get existing customer by email, create if not found
         try:
             customer, created = Customer.objects.get_or_create(
                 email=customer_data.get('email', ''),
@@ -173,7 +164,6 @@ class RegisterSampleSerializer(serializers.Serializer):
                     status='Awaiting HOD Review'
                 )
                 
-                # Create Test rows for each selected ingredient
                 for ingredient_id in selected_ingredients:
                     try:
                         ingredient = Ingredient.objects.get(id=ingredient_id)
@@ -187,7 +177,6 @@ class RegisterSampleSerializer(serializers.Serializer):
                         raise serializers.ValidationError({'selected_ingredients': f'Ingredient {ingredient_id} does not exist.'})
 
                 created_samples.append(sample)
-
             except Exception as e:
                 raise serializers.ValidationError({'sample': f'Failed to create sample: {str(e)}'})
 
@@ -198,7 +187,6 @@ class RegisterSampleSerializer(serializers.Serializer):
         )
         total_amount = MARKING_FEE * Decimal(len(samples_data)) + total_ingredients_price
 
-        # Update payment logic to handle multiple samples
         if created_samples:
             payment, _ = Payment.objects.get_or_create(
                 sample=created_samples[0],
@@ -210,11 +198,9 @@ class RegisterSampleSerializer(serializers.Serializer):
         return created_samples
 
     def validate(self, data):
-        # The new SampleSubmissionSerializer now handles most of the validation
         customer_data = data.get('customer', {})
         samples_data = data.get('samples', [])
         
-        # Manually validate customer data as before
         expected_customer_fields = {'name', 'phone_number', 'email', 'address'}
         if not all(k in expected_customer_fields for k in customer_data.keys()):
             raise serializers.ValidationError({'customer': 'Invalid customer fields. Use only name, phone_number, email, and address.'})

@@ -154,7 +154,6 @@ class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
 
-
 class DepartmentViewSet(viewsets.ModelViewSet):
     queryset = Department.objects.all()
     serializer_class = DepartmentSerializer
@@ -223,7 +222,6 @@ def submit_sample_api(request):
     else:
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def verify_payment_api(request, control_number):
@@ -270,3 +268,14 @@ def ingredient_list_api(request):
     ingredients = Ingredient.objects.all()
     serializer = IngredientSerializer(ingredients, many=True)
     return Response({'success': True, 'ingredients': serializer.data})
+
+# New endpoint to fetch registrar-specific samples
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def registrar_samples_api(request):
+    if request.user.role != 'Registrar':
+        return Response({'success': False, 'message': 'Access denied. Registrar role required.'}, status=status.HTTP_403_FORBIDDEN)
+    
+    recent_samples = Sample.objects.filter(registrar=request.user).order_by('-date_received')
+    serializer = SampleDashboardSerializer(recent_samples, many=True)
+    return Response({'success': True, 'samples': serializer.data})

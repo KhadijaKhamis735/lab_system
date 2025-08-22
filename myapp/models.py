@@ -49,11 +49,16 @@ class Customer(models.Model):
         return self.name
 
 class Ingredient(models.Model):
+    TEST_TYPE_CHOICES = (
+        ('Microbiology', 'Microbiology'),
+        ('Chemistry', 'Chemistry'),
+    )
     name = models.CharField(max_length=100, unique=True)
     price = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    test_type = models.CharField(max_length=50, choices=TEST_TYPE_CHOICES, default='Microbiology')  # New field
 
     def __str__(self):
-        return f"{self.name} ({self.price}/=)"
+        return f"{self.name} ({self.price}/=) - {self.test_type}"
 
 class Sample(models.Model):
     STATUS_CHOICES = (
@@ -82,18 +87,12 @@ class Sample(models.Model):
             with transaction.atomic():
                 today = timezone.now().date()
                 date_prefix = today.strftime("%Y%m%d")
-                
-                # Filter by control numbers that start with the date prefix and are followed by a digit.
-                # This prevents issues with non-digit suffixes from old records.
                 last_sample = Sample.objects.filter(control_number__startswith=date_prefix).order_by('control_number').last()
-                
                 new_number = 1
                 if last_sample and last_sample.control_number[len(date_prefix):].isdigit():
                     last_number_str = last_sample.control_number[len(date_prefix):]
                     last_number = int(last_number_str)
                     new_number = last_number + 1
-                
-                # The only change is here: removed the hyphen
                 self.control_number = f'{date_prefix}{new_number:04d}'
         super().save(*args, **kwargs)
 
@@ -119,7 +118,6 @@ class Test(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Pending')
 
     def __str__(self):
-        # CORRECTED: Safely access the ingredient name to prevent 'AttributeError'
         ingredient_name = self.ingredient.name if self.ingredient else "N/A"
         return f"{ingredient_name} test for {self.sample.control_number}"
 
@@ -148,6 +146,5 @@ class Result(models.Model):
     sent_to_dpf = models.BooleanField(default=False)
 
     def __str__(self):
-        # CORRECTED: Safely access the ingredient name to prevent 'AttributeError'
         ingredient_name = self.test.ingredient.name if self.test and self.test.ingredient else "N/A"
         return f"Result for {self.sample.control_number} – {ingredient_name}"
