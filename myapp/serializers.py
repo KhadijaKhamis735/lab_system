@@ -3,6 +3,7 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
+from django.contrib.auth.hashers import make_password
 
 from .models import (
     User, Department, Division, Customer, Sample, Test, Payment, Result, Ingredient
@@ -47,16 +48,26 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = [
-            'id', 'username', 'email', 'first_name', 'last_name',
-            'role', 'department', 'department_name', 'division', 'division_name'
-        ]
+        fields = ['id', 'username', 'email', 'role', 'department', 'department_name', 'division', 'division_name']
 
     def get_department_name(self, obj):
         return obj.department.name if obj.department else None
 
     def get_division_name(self, obj):
         return obj.division.name if obj.division else None
+
+class CreateUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'role', 'department', 'division', 'password']
+        extra_kwargs = {'password': {'write_only': True, 'required': True}}
+
+    def create(self, validated_data):
+        password = validated_data.pop('password')
+        user = User.objects.create(**validated_data)
+        user.set_password(password)
+        user.save()
+        return user
 
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
@@ -79,14 +90,14 @@ class IngredientSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'price', 'test_type']
 
 class TestSerializer(serializers.ModelSerializer):
-    ingredient_name = serializers.CharField(source='ingredient.name', read_only=True)
+    ingredient = IngredientSerializer()
     assigned_to_name = serializers.CharField(source='assigned_to.username', read_only=True)
 
     class Meta:
         model = Test
         fields = [
-            'id', 'sample', 'ingredient', 'ingredient_name',
-            'assigned_to', 'assigned_to_name', 'results', 'price', 'status'
+            'id', 'sample', 'ingredient', 'assigned_to', 'assigned_to_name',
+            'results', 'price', 'status'
         ]
 
 class PaymentSerializer(serializers.ModelSerializer):
@@ -106,15 +117,15 @@ class ResultSerializer(serializers.ModelSerializer):
 
 class SampleDashboardSerializer(serializers.ModelSerializer):
     customer = CustomerSerializer(read_only=True)
-    tests = TestSerializer(many=True, read_only=True)
     registrar_name = serializers.CharField(source='registrar.username', read_only=True)
     payment_status = serializers.CharField(source='payment.status', read_only=True)
+    tests = TestSerializer(many=True, read_only=True)
 
     class Meta:
         model = Sample
         fields = [
             'id', 'control_number', 'customer', 'registrar_name', 'date_received',
-            'status', 'sample_details', 'tests', 'payment_status'
+            'status', 'sample_details', 'payment_status', 'tests'
         ]
 
 class SampleSubmissionSerializer(serializers.Serializer):
@@ -163,7 +174,7 @@ class RegisterSampleSerializer(serializers.Serializer):
                     sample_details=sample_details,
                     status='Awaiting HOD Review'
                 )
-                
+
                 for ingredient_id in selected_ingredients:
                     try:
                         ingredient = Ingredient.objects.get(id=ingredient_id)
@@ -200,13 +211,13 @@ class RegisterSampleSerializer(serializers.Serializer):
     def validate(self, data):
         customer_data = data.get('customer', {})
         samples_data = data.get('samples', [])
-        
+
         expected_customer_fields = {'name', 'phone_number', 'email', 'address'}
         if not all(k in expected_customer_fields for k in customer_data.keys()):
             raise serializers.ValidationError({'customer': 'Invalid customer fields. Use only name, phone_number, email, and address.'})
         if not all(k in customer_data for k in expected_customer_fields):
             raise serializers.ValidationError({'customer': 'Missing required fields: name, phone_number, email, and address are required.'})
-            
+
         if not samples_data:
             raise serializers.ValidationError({'samples': 'At least one sample is required.'})
 

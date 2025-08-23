@@ -11,7 +11,7 @@ DEBUG = True
 ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
-    '192.168.1.180',  # Your computer's IP address
+    '10.89.16.171',  # Your computer's IP address
     '*',  # Allow all for development (remove in production)
 ]
 
@@ -44,7 +44,7 @@ MIDDLEWARE = [
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "http://192.168.1.127:5173",
+    "http://10.89.16.183:5173",
 ]
 
 # Alternative: Allow all origins during development (easier but less secure)
