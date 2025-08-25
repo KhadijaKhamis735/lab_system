@@ -97,11 +97,13 @@ def hod_dashboard(request):
         return Response({'success': False, 'message': 'Access denied. HOD role required.'}, status=status.HTTP_403_FORBIDDEN)
 
     department_samples = Sample.objects.filter(status__in=['Registered', 'Awaiting HOD Review'])
+    technicians = User.objects.filter(role='Technician').values('id', 'username')
 
     return Response({
         'success': True,
         'role': 'HOD',
-        'department_samples': SampleDashboardSerializer(department_samples, many=True).data
+        'department_samples': SampleDashboardSerializer(department_samples, many=True).data,
+        'technicians': list(technicians)
     })
 
 @api_view(['GET'])
