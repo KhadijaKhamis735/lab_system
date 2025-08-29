@@ -30,7 +30,6 @@ from django.contrib import admin
 from django.urls import path, include
 from django.http import JsonResponse
 
-# This is a simple view function for the root URL
 def api_root_view(request):
     return JsonResponse({
         "message": "Welcome to the Lab Management System API!",
@@ -39,9 +38,7 @@ def api_root_view(request):
     })
 
 urlpatterns = [
-    # New pattern to handle the root URL
     path('', api_root_view),
-    
     path('admin/', admin.site.urls),
     path('api/', include('myapp.urls')),
 ]

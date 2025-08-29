@@ -31,4 +31,6 @@ urlpatterns = [
     path('payments/verify/<str:control_number>/', api_views.verify_payment_api, name='verify_payment'),
     path('registrar-samples/', api_views.registrar_samples_api, name='registrar_samples'),
     path('admin/add-user/', api_views.admin_add_user, name='admin_add_user'),
+    path('technician-assigned-tests/', api_views.technician_assigned_tests, name='technician_assigned_tests'),
+    path('assign-technician-to-sample/', api_views.assign_technician_to_sample, name='assign_technician_to_sample'),
 ]

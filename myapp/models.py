@@ -1,10 +1,9 @@
 from decimal import Decimal
-from django.db import models
+from django.db import models, transaction
 from django.contrib.auth.models import AbstractUser
 from django.utils import timezone
 from phonenumber_field.modelfields import PhoneNumberField
 import logging
-from django.db import transaction
 
 logger = logging.getLogger(__name__)
 
@@ -54,17 +53,16 @@ class Ingredient(models.Model):
         ('Chemistry', 'Chemistry'),
     )
     name = models.CharField(max_length=100, unique=True)
-    price = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
-    test_type = models.CharField(max_length=50, choices=TEST_TYPE_CHOICES, default='Microbiology')  # New field
+    price = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    test_type = models.CharField(max_length=50, choices=TEST_TYPE_CHOICES, default='Microbiology')
 
     def __str__(self):
-        return f"{self.name} ({self.price}/=) - {self.test_type}"
+        return f"{self.name} (TZS {self.price}) - {self.test_type}"
 
 class Sample(models.Model):
     STATUS_CHOICES = (
         ('Registered', 'Registered'),
         ('Awaiting HOD Review', 'Awaiting HOD Review'),
-        ('Awaiting HODv Assignment', 'Awaiting HODv Assignment'),
         ('In Progress', 'In Progress'),
         ('Completed', 'Completed'),
         ('Sent to DPF', 'Sent to DPF'),
@@ -72,7 +70,7 @@ class Sample(models.Model):
     control_number = models.CharField(max_length=50, unique=True, blank=True)
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
     registrar = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='registered_samples')
-    date_received = models.DateField(auto_now_add=True)
+    date_received = models.DateTimeField(auto_now_add=True)  # Changed to DateTimeField for more precision
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Registered')
     assigned_to_hod = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='hod_samples')
     assigned_to_hodv = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='hodv_samples')
@@ -104,15 +102,28 @@ class Sample(models.Model):
         self.save()
         logger.info(f"Sample {self.control_number} assigned to HOD: {self.assigned_to_hod.username}")
 
+    def assign_to_technician(self, technician):
+        """Assign a technician to this sample and update related tests."""
+        if not isinstance(technician, User) or technician.role != 'Technician':
+            raise ValueError("Invalid technician assignment. Must be a Technician.")
+        with transaction.atomic():
+            self.assigned_to_technician = technician
+            self.status = 'In Progress'
+            self.save(update_fields=['assigned_to_technician', 'status'])
+            # Update all related Test objects
+            tests_updated = self.test_set.update(assigned_to=technician, status='In Progress')
+            logger.info(f"Sample {self.control_number} assigned to Technician {technician.username}. Updated {tests_updated} tests.")
+        return True
+
 class Test(models.Model):
     STATUS_CHOICES = (
         ('Pending', 'Pending'),
         ('In Progress', 'In Progress'),
         ('Completed', 'Completed'),
     )
-    sample = models.ForeignKey(Sample, on_delete=models.CASCADE)
+    sample = models.ForeignKey(Sample, on_delete=models.CASCADE, related_name='test_set')
     ingredient = models.ForeignKey(Ingredient, on_delete=models.CASCADE, null=True, blank=True)
-    assigned_to = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True)
+    assigned_to = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_tests')
     results = models.TextField(blank=True, null=True)
     price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Pending')
