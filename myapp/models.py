@@ -70,7 +70,7 @@ class Sample(models.Model):
     control_number = models.CharField(max_length=50, unique=True, blank=True)
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
     registrar = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='registered_samples')
-    date_received = models.DateTimeField(auto_now_add=True)  # Changed to DateTimeField for more precision
+    date_received = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Registered')
     assigned_to_hod = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='hod_samples')
     assigned_to_hodv = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='hodv_samples')
@@ -119,6 +119,7 @@ class Test(models.Model):
     STATUS_CHOICES = (
         ('Pending', 'Pending'),
         ('In Progress', 'In Progress'),
+        ('Awaiting HOD Review', 'Awaiting HOD Review'),
         ('Completed', 'Completed'),
     )
     sample = models.ForeignKey(Sample, on_delete=models.CASCADE, related_name='test_set')
@@ -127,6 +128,9 @@ class Test(models.Model):
     results = models.TextField(blank=True, null=True)
     price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Pending')
+    approved_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='approved_tests')
+    approved_date = models.DateTimeField(null=True, blank=True)
+    submitted_date = models.DateTimeField(null=True, blank=True)  # Added to fix the error
 
     def __str__(self):
         ingredient_name = self.ingredient.name if self.ingredient else "N/A"
