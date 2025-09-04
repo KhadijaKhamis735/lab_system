@@ -27,7 +27,6 @@ urlpatterns = [
     path('tests/', api_views.TestListCreateAPI.as_view(), name='tests_api'),
     path('tests/<int:pk>/', api_views.TestRetrieveUpdateDestroyAPI.as_view(), name='test_detail_api'),
     path('submit-sample/', api_views.submit_sample_api, name='submit_sample'),
-    path('ingredients/', api_views.ingredient_list_api, name='ingredient_list'),
     path('payments/verify/<str:control_number>/', api_views.verify_payment_api, name='verify_payment'),
     path('registrar-samples/', api_views.registrar_samples_api, name='registrar_samples'),
     path('admin/add-user/', api_views.admin_add_user, name='admin_add_user'),

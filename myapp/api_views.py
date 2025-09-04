@@ -1,8 +1,8 @@
 from django.http import JsonResponse
-from rest_framework import generics, viewsets, permissions, status
+from rest_framework import generics, viewsets, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
 from django.db import transaction
 from django.core.exceptions import ObjectDoesNotExist
 import logging
@@ -11,6 +11,8 @@ import random
 from django.contrib.auth.hashers import make_password
 from decimal import Decimal
 from django.utils import timezone
+from rest_framework.permissions import IsAuthenticated, AllowAny, BasePermission
+import requests
 
 from .models import User, Department, Division, Customer, Sample, Test, Payment, Result, Ingredient
 from .serializers import (
@@ -21,8 +23,176 @@ from .serializers import (
 
 logger = logging.getLogger(__name__)
 
+
+@api_view(['POST'])
+@permission_classes([AllowAny])  # Allow any authenticated user for now
+def customer_submit_sample_api(request):
+    try:
+        customer_data = request.data.get('customer', {})
+        samples_data = request.data.get('samples', [])
+        test_type = request.data.get('test_type', 'Chemistry')
+        total_amount = request.data.get('total_amount', 0)
+        is_organization = request.data.get('is_organization', False)
+
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return Response({'success': False, 'message': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+        token = auth_header.replace('Bearer ', '')
+        try:
+            access_token = AccessToken(token)
+            user_id = access_token.payload.get('user_id')
+            user = User.objects.get(id=user_id)
+        except Exception as e:
+            return Response({'success': False, 'message': 'Invalid token'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        registrar = User.objects.filter(role='Registrar').first()
+        if not registrar:
+            return Response({'success': False, 'message': 'No registrar available'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        created_samples = []
+        with transaction.atomic():
+            for sample_data in samples_data:
+                sample = Sample.objects.create(
+                    registrar=registrar,
+                    name=sample_data.get('name', ''),
+                    sample_details=sample_data.get('sample_details', ''),
+                    status='Submitted'
+                )
+                Payment.objects.create(sample=sample, status='Pending', amount_due=Decimal(str(total_amount)))
+                created_samples.append(sample)
+
+        logger.info(f"Customer {user.username} submitted {len(samples_data)} samples assigned to {registrar.username}")
+        return Response({
+            'success': True,
+            'message': 'Samples submitted successfully',
+            'samples': SampleDashboardSerializer(created_samples, many=True).data
+        }, status=status.HTTP_201_CREATED)
+
+    except Exception as e:
+        logger.error(f"Error in customer_submit_sample_api: {str(e)}")
+        return Response({'success': False, 'message': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# @api_view(['POST'])
+# @permission_classes([AllowAny])  # Allow any authenticated user for now
+# def customer_submit_sample_api(request):
+#     try:
+#         customer_data = request.data.get('customer', {})
+#         samples_data = request.data.get('samples', [])
+#         test_type = request.data.get('test_type', 'Chemistry')
+#         total_amount = request.data.get('total_amount', 0)
+#         is_organization = request.data.get('is_organization', False)
+
+#         auth_header = request.headers.get('Authorization', '')
+#         if not auth_header or not auth_header.startswith('Bearer '):
+#             return Response({'success': False, 'message': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+#         token = auth_header.replace('Bearer ', '')
+#         try:
+#             access_token = AccessToken(token)
+#             user_id = access_token.payload.get('user_id')
+#             user = User.objects.get(id=user_id)
+#         except Exception as e:
+#             return Response({'success': False, 'message': 'Invalid token'}, status=status.HTTP_401_UNAUTHORIZED)
+
+#         registrar = User.objects.filter(role='Registrar').first()
+#         if not registrar:
+#             return Response({'success': False, 'message': 'No registrar available'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+#         created_samples = []
+#         with transaction.atomic():
+#             for sample_data in samples_data:
+#                 sample = Sample.objects.create(
+#                     registrar=registrar,
+#                     name=sample_data.get('name', ''),
+#                     sample_details=sample_data.get('sample_details', ''),
+#                     status='Submitted'
+#                 )
+#                 Payment.objects.create(sample=sample, status='Pending', amount_due=Decimal(str(total_amount)))
+#                 created_samples.append(sample)
+
+#         # Forward to Registrar API
+#         registrar_data = {
+#             'customer': customer_data,
+#             'samples': samples_data,
+#             'test_type': test_type,
+#             'total_amount': str(total_amount),
+#             'is_organization': is_organization,
+#         }
+#         registrar_response = requests.post(
+#             'http://192.168.1.180:8001/api/submit-sample/',
+#             headers={'Authorization': auth_header, 'Content-Type': 'application/json'},
+#             json=registrar_data
+#         )
+#         if registrar_response.status_code != 201:
+#             logger.error(f"Failed to forward to Registrar: {registrar_response.text}")
+#             return Response({'success': False, 'message': 'Failed to notify Registrar'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+#         registrar_result = registrar_response.json()
+#         logger.info(f"Customer {user.username} submitted {len(samples_data)} samples assigned to {registrar.username}")
+#         return Response({
+#             'success': True,
+#             'message': 'Samples submitted successfully',
+#             'samples': SampleDashboardSerializer(created_samples, many=True).data,
+#             **registrar_result  # Include any additional data from Registrar response
+#         }, status=status.HTTP_201_CREATED)
+
+#     except Exception as e:
+#         logger.error(f"Error in customer_submit_sample_api: {str(e)}")
+#         return Response({'success': False, 'message': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def registrar_dashboard(request):
+    try:
+        if request.user.role != 'Registrar':
+            logger.warning(f"Access denied for user {request.user.username} (role: {request.user.role}) to registrar dashboard")
+            return Response({'success': False, 'message': 'Access denied. Registrar role required.'}, status=status.HTTP_403_FORBIDDEN)
+        # Fetch all samples assigned to this registrar, including customer-submitted ones
+        recent_samples = Sample.objects.filter(registrar=request.user).order_by('-date_received')[:10]
+        # Include customer-submitted samples where this registrar was assigned
+        customer_samples = Sample.objects.filter(status='Submitted', registrar=request.user).order_by('-date_received')[:10]
+        all_samples = (recent_samples | customer_samples).distinct().order_by('-date_received')[:10]
+        if not all_samples.exists():
+            all_samples = []
+        related_tests = Test.objects.filter(sample__in=all_samples).select_related('ingredient')
+        logger.info(f"Registrar dashboard loaded for user {request.user.username} with {len(all_samples)} samples")
+        return Response({
+            'success': True,
+            'role': 'Registrar',
+            'recent_samples': SampleDashboardSerializer(all_samples, many=True).data,
+            'pending_tests': TestSerializer(related_tests, many=True).data
+        })
+    except Exception as e:
+        logger.error(f"Error in registrar_dashboard for {request.user.username}: {str(e)}")
+        return Response({'success': False, 'message': f'Server error: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def verify_payment_api(request, control_number):
+    try:
+        sample = Sample.objects.get(control_number=control_number)
+        if not hasattr(sample, 'payment'):
+            payment = Payment.objects.create(sample=sample, status='Pending', amount_due=Decimal('0.00'))
+        else:
+            payment = sample.payment
+        if random.random() > 0.5:
+            payment.status = 'Verified'
+            payment.verified_by = request.user
+            payment.verification_date = timezone.now()
+            payment.save()
+            logger.info(f"Payment verified for sample {control_number} by {request.user.username}")
+            return Response({'success': True, 'message': 'Payment verified successfully.', 'payment': PaymentSerializer(payment).data})
+        else:
+            logger.info(f"Payment still pending for sample {control_number}")
+            return Response({'success': False, 'message': 'Payment is still pending.', 'payment': PaymentSerializer(payment).data})
+    except Sample.DoesNotExist:
+        logger.error(f"Sample not found for control_number {control_number}")
+        return Response({'success': False, 'message': 'Sample not found.'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"Error in verify_payment_api for {control_number}: {str(e)}")
+        return Response({'success': False, 'message': f'Server error: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 # Custom permission class to check 'Admin' role
-class IsAdmin(permissions.BasePermission):
+class IsAdmin(BasePermission):
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role == 'Admin'
 
@@ -30,7 +200,7 @@ class IsAdmin(permissions.BasePermission):
 # Authentication APIs
 # ===============================
 @api_view(['POST'])
-@permission_classes([permissions.AllowAny])
+@permission_classes([AllowAny])
 def login_api(request):
     serializer = LoginSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -49,7 +219,7 @@ def login_api(request):
     }, status=status.HTTP_200_OK)
 
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def logout_api(request):
     try:
         refresh_token = request.data.get("refresh")
@@ -62,7 +232,7 @@ def logout_api(request):
         return Response({'success': False, 'message': 'Invalid token'}, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def user_profile(request):
     try:
         logger.debug(f"Fetching profile for user {request.user.username} (role: {request.user.role}) with token")
@@ -75,7 +245,7 @@ def user_profile(request):
 # Dashboards (role-guarded)
 # ===============================
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def admin_dashboard(request):
     if request.user.role != 'Admin':
         logger.warning(f"Access denied for user {request.user.username} (role: {request.user.role}) to admin dashboard")
@@ -100,7 +270,7 @@ def admin_dashboard(request):
     })
 
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def technician_dashboard(request):
     if request.user.role != 'Technician':
         logger.warning(f"Access denied for user {request.user.username} (role: {request.user.role}) to technician dashboard")
@@ -110,7 +280,7 @@ def technician_dashboard(request):
     return Response({'success': True, 'role': 'Technician', 'assigned_tests': TestSerializer(assigned_tests, many=True).data})
 
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def hod_dashboard(request):
     if request.user.role != 'HOD':
         logger.warning(f"Access denied for user {request.user.username} (role: {request.user.role}) to HOD dashboard")
@@ -119,7 +289,6 @@ def hod_dashboard(request):
             status=status.HTTP_403_FORBIDDEN
         )
 
-    # Filter samples and tests for this HOD's department
     department = request.user.department
     if not department:
         logger.error(f"HOD {request.user.username} has no department assigned")
@@ -142,23 +311,7 @@ def hod_dashboard(request):
     })
 
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
-def registrar_dashboard(request):
-    if request.user.role != 'Registrar':
-        logger.warning(f"Access denied for user {request.user.username} (role: {request.user.role}) to registrar dashboard")
-        return Response({'success': False, 'message': 'Access denied. Registrar role required.'}, status=status.HTTP_403_FORBIDDEN)
-    recent_samples = Sample.objects.filter(registrar=request.user).order_by('-date_received')[:10]
-    related_tests = Test.objects.filter(sample__in=recent_samples).select_related('ingredient')
-    logger.info(f"Registrar dashboard loaded for user {request.user.username}")
-    return Response({
-        'success': True,
-        'role': 'Registrar',
-        'recent_samples': SampleDashboardSerializer(recent_samples, many=True).data,
-        'pending_tests': TestSerializer(related_tests, many=True).data
-    })
-
-@api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def director_dashboard(request):
     if request.user.role != 'Director':
         logger.warning(f"Access denied for user {request.user.username} (role: {request.user.role}) to director dashboard")
@@ -177,57 +330,57 @@ def director_dashboard(request):
 class SampleListCreateAPI(generics.ListCreateAPIView):
     queryset = Sample.objects.all()
     serializer_class = SampleDashboardSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
 class SampleRetrieveUpdateDestroyAPI(generics.RetrieveUpdateDestroyAPIView):
     queryset = Sample.objects.all()
     serializer_class = SampleDashboardSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
 class TestListCreateAPI(generics.ListCreateAPIView):
     queryset = Test.objects.all()
     serializer_class = TestSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
 class TestRetrieveUpdateDestroyAPI(generics.RetrieveUpdateDestroyAPIView):
     queryset = Test.objects.all()
     serializer_class = TestSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
 class DepartmentViewSet(viewsets.ModelViewSet):
     queryset = Department.objects.all()
     serializer_class = DepartmentSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
 class DivisionViewSet(viewsets.ModelViewSet):
     queryset = Division.objects.all()
     serializer_class = DivisionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
 class CustomerViewSet(viewsets.ModelViewSet):
     queryset = Customer.objects.all()
     serializer_class = CustomerSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
 class PaymentViewSet(viewsets.ModelViewSet):
     queryset = Payment.objects.all()
     serializer_class = PaymentSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
 class ResultViewSet(viewsets.ModelViewSet):
     queryset = Result.objects.all()
     serializer_class = ResultSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
 class IngredientViewSet(viewsets.ModelViewSet):
     queryset = Ingredient.objects.all()
     serializer_class = IngredientSerializer
-    permission_classes = [IsAdmin]
+    permission_classes = [IsAuthenticated]  # Allow authenticated users to list
 
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
@@ -235,6 +388,9 @@ class IngredientViewSet(viewsets.ModelViewSet):
         return Response({'success': True, 'ingredients': serializer.data})
 
     def create(self, request, *args, **kwargs):
+        if request.user.role != 'Admin':
+            logger.warning(f"Access denied for user {request.user.username} (role: {request.user.role}) to create ingredient")
+            return Response({'success': False, 'message': 'Access denied. Admin role required.'}, status=status.HTTP_403_FORBIDDEN)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
@@ -249,7 +405,7 @@ class IngredientViewSet(viewsets.ModelViewSet):
 # Sample Submission + Payments
 # ===============================
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 @transaction.atomic
 def submit_sample_api(request):
     print(f"Request user: {request.user.username}, role: {request.user.role}")
@@ -257,18 +413,15 @@ def submit_sample_api(request):
         logger.warning(f"Access denied for user {request.user.username} (role: {request.user.role}) to submit sample")
         return Response({'success': False, 'message': 'Access denied. Registrar role required.'}, status=status.HTTP_403_FORBIDDEN)
 
-    serializer = RegisterSampleSerializer(data=request.data, context={'request': request})
+    serializer = RegisterSampleSerializer(data=request.data.get('samples', []), many=True, context={'request': request})
     print(f"Received data: {request.data}")
     if serializer.is_valid():
         try:
-            samples = serializer.save()
-            try:
-                payment = Payment.objects.get(sample=samples[0])
-            except Payment.DoesNotExist:
-                payment = Payment.objects.create(sample=samples[0], status='Pending', amount_due=Decimal('0.00'))
+            samples = serializer.save(registrar=request.user)
+            payment = Payment.objects.create(sample=samples[0], status='Pending', amount_due=Decimal(str(request.data.get('total_amount', 0))))
             tests = Test.objects.filter(sample__in=samples)
             print(f"Submitted samples: {[s.control_number for s in samples]}")
-            logger.info(f"Samples {', '.join(s.control_number for s in samples)} submitted by {request.user.username} to HOD: {samples[0].assigned_to_hod.username if samples[0].assigned_to_hod else 'None'}")
+            logger.info(f"Samples {', '.join(s.control_number for s in samples)} submitted by {request.user.username}")
             return Response({
                 'success': True,
                 'message': 'Samples and tests submitted successfully.',
@@ -283,63 +436,36 @@ def submit_sample_api(request):
         print(f"Serializer errors: {serializer.errors}")
         return Response({'success': False, 'message': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
-@api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
-def verify_payment_api(request, control_number):
-    try:
-        sample = Sample.objects.get(control_number=control_number)
-        if random.random() > 0.5:
-            sample.payment.status = 'Verified'
-            sample.payment.verified_by = request.user
-            sample.payment.verification_date = timezone.now()
-            sample.payment.save()
-            logger.info(f"Payment verified for sample {control_number} by {request.user.username}")
-            return Response({'success': True, 'message': 'Payment verified successfully.'})
-        else:
-            logger.info(f"Payment still pending for sample {control_number}")
-            return Response({'success': False, 'message': 'Payment is still pending.'})
-    except (Sample.DoesNotExist, Payment.DoesNotExist) as e:
-        logger.error(f"Payment verification failed for control_number {control_number}: {str(e)}")
-        return Response({'success': False, 'message': 'Sample or Payment not found.'}, status=status.HTTP_404_NOT_FOUND)
+# [Other endpoints like registrar_dashboard, verify_payment_api, etc. remain unchanged]
 
 # ===============================
 # Assignment APIs
 # ===============================
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def assign_to_hodv_api(request, sample_id):
     return Response({'message': 'This endpoint is not yet implemented.'}, status=status.HTTP_501_NOT_IMPLEMENTED)
 
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def assign_to_technician_api(request, sample_id):
     return Response({'message': 'This endpoint is not yet implemented.'}, status=status.HTTP_501_NOT_IMPLEMENTED)
 
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def department_activities(request):
     return Response({'message': 'This endpoint is not yet implemented.'}, status=status.HTTP_501_NOT_IMPLEMENTED)
 
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def pending_samples(request):
     return Response({'message': 'This endpoint is not yet implemented.'}, status=status.HTTP_501_NOT_IMPLEMENTED)
-
-# ===============================
-# Ingredients API
-# ===============================
-@api_view(['GET'])
-@permission_classes([IsAdmin])
-def ingredient_list_api(request):
-    ingredients = Ingredient.objects.all()
-    serializer = IngredientSerializer(ingredients, many=True)
-    return Response({'success': True, 'ingredients': serializer.data})
 
 # ===============================
 # Registrar Samples API
 # ===============================
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def registrar_samples_api(request):
     if request.user.role != 'Registrar':
         logger.warning(f"Access denied for user {request.user.username} (role: {request.user.role}) to registrar samples")
@@ -354,7 +480,7 @@ def registrar_samples_api(request):
 # Admin Add User
 # ===============================
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def admin_add_user(request):
     if request.user.role != 'Admin':
         logger.warning(f"Access denied for user {request.user.username} (role: {request.user.role}) to add user")
@@ -384,7 +510,7 @@ def admin_add_user(request):
 # Technician Assigned Tests
 # ===============================
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def technician_assigned_tests(request):
     user = request.user
     if user.role != 'Technician':
@@ -425,7 +551,7 @@ def technician_assigned_tests(request):
 # Assign Technician to Sample
 # ===============================
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def assign_technician_to_sample(request):
     if request.user.role != 'HOD':
         return Response({'success': False, 'message': 'Access denied. HOD role required.'}, status=status.HTTP_403_FORBIDDEN)
@@ -438,7 +564,6 @@ def assign_technician_to_sample(request):
             if sample.status != 'Awaiting HOD Review':
                 return Response({'success': False, 'message': 'Sample must be in Awaiting HOD Review status.'}, status=status.HTTP_400_BAD_REQUEST)
             technician = User.objects.get(id=technician_id, role='Technician')
-            # Always set assigned_to_hod to the current HOD who is assigning
             sample.assigned_to_hod = request.user
             sample.save(update_fields=['assigned_to_hod'])
             logger.debug(f"Set assigned_to_hod for sample {sample.control_number} as {sample.assigned_to_hod.username}")
@@ -462,7 +587,7 @@ def assign_technician_to_sample(request):
 # Submit Test Result by Technician
 # ===============================
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def submit_test_result(request):
     if request.user.role != 'Technician':
         logger.warning(f"Access denied for user {request.user.username} (role: {request.user.role}) to submit test result")
@@ -490,7 +615,7 @@ def submit_test_result(request):
 # Approve Test Result by HOD
 # ===============================
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsAuthenticated])
 def approve_test_result(request):
     if request.user.role != 'HOD':
         logger.warning(f"Access denied for user {request.user.username} (role: {request.user.role}) to approve test result")
@@ -504,7 +629,6 @@ def approve_test_result(request):
             test.approved_by = request.user
             test.approved_date = timezone.now()
             test.save(update_fields=['status', 'approved_by', 'approved_date'])
-            # Optionally create a Result record
             Result.objects.update_or_create(
                 test=test,
                 defaults={'result_data': test.results, 'confirmed_by_hod': True, 'finalized_date': timezone.now()}

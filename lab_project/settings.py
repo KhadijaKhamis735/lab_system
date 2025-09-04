@@ -46,6 +46,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://192.168.1.153:5173",
+    "http://192.168.1.180:8001",  # Add Customer backend origin
 ]
 
 # Alternative: Allow all origins during development (easier but less secure)
