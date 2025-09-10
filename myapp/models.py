@@ -19,6 +19,7 @@ class User(AbstractUser):
     role = models.CharField(max_length=50, choices=ROLE_CHOICES, default='Technician')
     department = models.ForeignKey('Department', on_delete=models.SET_NULL, null=True, blank=True)
     division = models.ForeignKey('Division', on_delete=models.SET_NULL, null=True, blank=True)
+    is_verified = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.username} ({self.role})"
@@ -103,14 +104,12 @@ class Sample(models.Model):
         logger.info(f"Sample {self.control_number} assigned to HOD: {self.assigned_to_hod.username}")
 
     def assign_to_technician(self, technician):
-        """Assign a technician to this sample and update related tests."""
         if not isinstance(technician, User) or technician.role != 'Technician':
             raise ValueError("Invalid technician assignment. Must be a Technician.")
         with transaction.atomic():
             self.assigned_to_technician = technician
             self.status = 'In Progress'
             self.save(update_fields=['assigned_to_technician', 'status'])
-            # Update all related Test objects
             tests_updated = self.test_set.update(assigned_to=technician, status='In Progress')
             logger.info(f"Sample {self.control_number} assigned to Technician {technician.username}. Updated {tests_updated} tests.")
         return True
@@ -130,7 +129,7 @@ class Test(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Pending')
     approved_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='approved_tests')
     approved_date = models.DateTimeField(null=True, blank=True)
-    submitted_date = models.DateTimeField(null=True, blank=True)  # Added to fix the error
+    submitted_date = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         ingredient_name = self.ingredient.name if self.ingredient else "N/A"
@@ -163,3 +162,12 @@ class Result(models.Model):
     def __str__(self):
         ingredient_name = self.test.ingredient.name if self.test and self.test.ingredient else "N/A"
         return f"Result for {self.sample.control_number} – {ingredient_name}"
+
+class VerificationToken(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    token = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    def __str__(self):
+        return f"Token for {self.user.username}"

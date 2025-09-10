@@ -3,11 +3,10 @@ from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'your-secret-key'  # change in production
+SECRET_KEY = 'your-secret-key'  # Change in production
 
 DEBUG = True
 
-# Updated ALLOWED_HOSTS for network access
 ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
@@ -27,7 +26,6 @@ INSTALLED_APPS = [
     'myapp',
     'corsheaders',
     'phonenumber_field',
-
 ]
 
 MIDDLEWARE = [
@@ -39,19 +37,18 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+
 ]
 
-# Updated CORS settings for network access
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://192.168.1.153:5173",
-    "http://192.168.1.180:8001",  # Add Customer backend origin
+    "http://192.168.1.180:8000",
+    "http://localhost:5174",
 ]
 
-# Alternative: Allow all origins during development (easier but less secure)
 CORS_ALLOW_ALL_ORIGINS = True
-
 CORS_ALLOW_CREDENTIALS = True
 
 ROOT_URLCONF = 'lab_project.urls'
@@ -117,3 +114,10 @@ SIMPLE_JWT = {
     'ROTATE_REFRESH_TOKENS': False,
     'BLACKLIST_AFTER_ROTATION': True,
 }
+
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'khadijakhamis270@gmail.com'  # Your Gmail address
+EMAIL_HOST_PASSWORD = 'dzdr wfdl rzxt iceu'  # Use a Gmail App Password if 2FA is enabled
