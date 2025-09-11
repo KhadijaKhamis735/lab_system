@@ -2,6 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from . import api_views
+from .api_views import unclaimed_samples
 
 router = DefaultRouter()
 router.register(r'users', api_views.UserViewSet)
@@ -28,17 +29,29 @@ urlpatterns = [
     path('api/dashboard/hod/', api_views.hod_dashboard, name='hod_dashboard'),
     path('api/dashboard/director/', api_views.director_dashboard, name='director_dashboard'),
 
-    # Customer & Registrar sample workflows
+    # Customer & Registrar workflows
     path('api/customer/submit-sample/', api_views.CustomerSubmitSampleAPIView.as_view(), name='customer_submit_sample'),
     path('api/registrar-samples/', api_views.registrar_samples_api, name='registrar_samples_api'),
-    path('api/registrar-samples/', api_views.registrar_samples_api, name='registrar_samples_api'),
+    path('api/unclaimed-samples/', unclaimed_samples, name='unclaimed-samples'),
+    path('api/registrar/register-sample/', api_views.registrar_register_sample, name='registrar_register_sample'),
+    path("api/technicians/", api_views.list_technicians, name="list_technicians"),
 
-    path('api/registrar/claim/<int:sample_id>/', api_views.registrar_claim_sample, name='registrar_claim_sample'),
 
-    # JWT tokens
+
+    # Registrar → HOD
+    path('api/registrar/submit-to-hod/<int:sample_id>/', api_views.registrar_submit_to_hod, name='registrar_submit_to_hod'),
+    path('api/claim-sample/<int:sample_id>/', api_views.registrar_claim_sample, name='registrar_claim_sample'),
+    path("api/hod/assign-technician/<int:sample_id>/", api_views.hod_assign_technician, name="hod_assign_technician"),
+
+
+    # HOD
+    path('api/hod/samples/', api_views.hod_dashboard, name='hod_dashboard'),
+
+
+    # JWT
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
-    # DRF router endpoints
+    # DRF router
     path('api/', include(router.urls)),
 ]

@@ -5,6 +5,8 @@ from django.utils import timezone
 from phonenumber_field.modelfields import PhoneNumberField
 import logging
 
+from django.db import models
+
 logger = logging.getLogger(__name__)
 
 class User(AbstractUser):
@@ -16,13 +18,29 @@ class User(AbstractUser):
         ('Technician', 'Laboratory Technician'),
         ('Director', 'Director'),
     )
+
+    SPECIALIZATION_CHOICES = (
+        ('Chemistry', 'Chemistry'),
+        ('Microbiology', 'Microbiology'),
+    )
+
     role = models.CharField(max_length=50, choices=ROLE_CHOICES, default='Technician')
+    specialization = models.CharField(   # 🔹 NEW FIELD
+        max_length=50,
+        choices=SPECIALIZATION_CHOICES,
+        null=True,
+        blank=True,
+        help_text="Only applies if role is Technician"
+    )
     department = models.ForeignKey('Department', on_delete=models.SET_NULL, null=True, blank=True)
     division = models.ForeignKey('Division', on_delete=models.SET_NULL, null=True, blank=True)
     is_verified = models.BooleanField(default=False)
 
     def __str__(self):
+        if self.role == "Technician" and self.specialization:
+            return f"{self.username} ({self.role} - {self.specialization})"
         return f"{self.username} ({self.role})"
+
 
 class Department(models.Model):
     name = models.CharField(max_length=100)
@@ -39,14 +57,32 @@ class Division(models.Model):
     def __str__(self):
         return f"{self.name} ({self.department.name})"
 
+# models.py
 class Customer(models.Model):
-    name = models.CharField(max_length=200)
-    email = models.EmailField(unique=True, null=True, blank=True)
+    first_name = models.CharField(max_length=100, null=True, blank=True)
+    middle_name = models.CharField(max_length=100, null=True, blank=True)
+    last_name = models.CharField(max_length=100, null=True, blank=True)
+    national_id = models.CharField(max_length=50, null=True, blank=True)
+
+    is_organization = models.BooleanField(default=False)
+    organization_name = models.CharField(max_length=200, null=True, blank=True)
+    organization_id = models.CharField(max_length=100, null=True, blank=True)
+
+    country = models.CharField(max_length=100, null=True, blank=True)
+    region = models.CharField(max_length=100, null=True, blank=True)
+    street = models.CharField(max_length=200, null=True, blank=True)
+
+    phone_country_code = models.CharField(max_length=10, null=True, blank=True)
     phone_number = PhoneNumberField(null=True, blank=True)
-    address = models.TextField(null=True, blank=True)
+
+    email = models.EmailField(unique=True, null=True, blank=True)
 
     def __str__(self):
-        return self.name
+        # full name fallback
+        if self.is_organization:
+            return f"{self.organization_name} ({self.organization_id})"
+        return f"{self.first_name} {self.last_name}".strip()
+
 
 class Ingredient(models.Model):
     TEST_TYPE_CHOICES = (
@@ -60,59 +96,84 @@ class Ingredient(models.Model):
     def __str__(self):
         return f"{self.name} (TZS {self.price}) - {self.test_type}"
 
+# myapp/models.py
+
+
 class Sample(models.Model):
     STATUS_CHOICES = (
         ('Registered', 'Registered'),
         ('Awaiting HOD Review', 'Awaiting HOD Review'),
+        ('Submitted to HOD', 'Submitted to HOD'),
         ('In Progress', 'In Progress'),
         ('Completed', 'Completed'),
         ('Sent to DPF', 'Sent to DPF'),
     )
-    control_number = models.CharField(max_length=50, unique=True, blank=True)
-    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
-    registrar = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='registered_samples')
+
+    control_number = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text="System-generated or manually entered control number."
+    )
+    customer = models.ForeignKey(
+        "Customer",
+        on_delete=models.CASCADE,
+        related_name="samples"
+    )
+    registrar = models.ForeignKey(
+        "User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="registered_samples"
+    )
     date_received = models.DateTimeField(auto_now_add=True)
-    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Registered')
-    assigned_to_hod = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='hod_samples')
-    assigned_to_hodv = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='hodv_samples')
-    assigned_to_technician = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='technician_samples')
-    sample_details = models.TextField(null=True, blank=True, help_text="Type of sample provided by the customer (e.g., Blood, Water)")
+    status = models.CharField(
+        max_length=50,
+        choices=STATUS_CHOICES,
+        default="Registered"
+    )
+
+    assigned_to_hod = models.ForeignKey(
+        "User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hod_samples"
+    )
+    assigned_to_hodv = models.ForeignKey(
+        "User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hodv_samples"
+    )
+    assigned_to_technician = models.ForeignKey(
+        "User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="technician_samples"
+    )
+
+    # 🔹 Sample details
+    sample_name = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Short title or name for the sample (e.g., Water Sample, Soil Sample)."
+    )
+    sample_details = models.TextField(
+        null=True,
+        blank=True,
+        help_text="Detailed description of the sample."
+    )
 
     def __str__(self):
-        return self.control_number
+        return f"{self.control_number or 'No Ctrl#'} - {self.sample_name or self.sample_details or 'Unnamed Sample'}"
 
-    def save(self, *args, **kwargs):
-        if not self.control_number:
-            with transaction.atomic():
-                today = timezone.now().date()
-                date_prefix = today.strftime("%Y%m%d")
-                last_sample = Sample.objects.filter(control_number__startswith=date_prefix).order_by('control_number').last()
-                new_number = 1
-                if last_sample and last_sample.control_number[len(date_prefix):].isdigit():
-                    last_number_str = last_sample.control_number[len(date_prefix):]
-                    last_number = int(last_number_str)
-                    new_number = last_number + 1
-                self.control_number = f'{date_prefix}{new_number:04d}'
-        super().save(*args, **kwargs)
 
-    def submit_to_hod(self):
-        if not self.registrar or not self.registrar.department or not self.registrar.department.hod:
-            raise ValueError("Registrar, department, or HOD not assigned")
-        self.status = 'Awaiting HOD Review'
-        self.assigned_to_hod = self.registrar.department.hod
-        self.save()
-        logger.info(f"Sample {self.control_number} assigned to HOD: {self.assigned_to_hod.username}")
 
-    def assign_to_technician(self, technician):
-        if not isinstance(technician, User) or technician.role != 'Technician':
-            raise ValueError("Invalid technician assignment. Must be a Technician.")
-        with transaction.atomic():
-            self.assigned_to_technician = technician
-            self.status = 'In Progress'
-            self.save(update_fields=['assigned_to_technician', 'status'])
-            tests_updated = self.test_set.update(assigned_to=technician, status='In Progress')
-            logger.info(f"Sample {self.control_number} assigned to Technician {technician.username}. Updated {tests_updated} tests.")
-        return True
 
 class Test(models.Model):
     STATUS_CHOICES = (

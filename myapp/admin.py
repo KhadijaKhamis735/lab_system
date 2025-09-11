@@ -4,14 +4,15 @@ from .models import User, Department, Division, Customer, Sample, Test, Payment,
 
 class CustomUserAdmin(UserAdmin):
     model = User
-    list_display = ('username', 'email', 'role', 'department', 'division', 'is_active')
-    list_filter = ('role', 'department', 'division', 'is_active')
+    list_display = ('username', 'email', 'role', 'specialization', 'department', 'division', 'is_active')
+    list_filter = ('role', 'specialization', 'department', 'division', 'is_active')
     fieldsets = UserAdmin.fieldsets + (
-        ('Additional Info', {'fields': ('role', 'department', 'division')}),
+        ('Additional Info', {'fields': ('role', 'specialization', 'department', 'division')}),
     )
     add_fieldsets = UserAdmin.add_fieldsets + (
-        ('Additional Info', {'fields': ('email', 'role', 'department', 'division')}),
+        ('Additional Info', {'fields': ('email', 'role', 'specialization', 'department', 'division')}),
     )
+
 
 @admin.register(Ingredient)
 class IngredientAdmin(admin.ModelAdmin):
