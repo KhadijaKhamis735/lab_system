@@ -102,6 +102,7 @@ class Ingredient(models.Model):
 class Sample(models.Model):
     STATUS_CHOICES = (
         ('Registered', 'Registered'),
+        ('Awaiting Registrar Approval', 'Awaiting Registrar Approval'),
         ('Awaiting HOD Review', 'Awaiting HOD Review'),
         ('Submitted to HOD', 'Submitted to HOD'),
         ('In Progress', 'In Progress'),
@@ -133,7 +134,9 @@ class Sample(models.Model):
         choices=STATUS_CHOICES,
         default="Registered"
     )
+    
 
+    
     assigned_to_hod = models.ForeignKey(
         "User",
         on_delete=models.SET_NULL,

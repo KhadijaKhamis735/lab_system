@@ -4,10 +4,10 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
-from django.contrib.auth.hashers import make_password
 
 from .models import (
-    User, Department, Division, Customer, Sample, Test, Payment, Result, Ingredient
+    User, Department, Division, Customer, Sample,
+    Test, Payment, Result, Ingredient
 )
 
 # ---------------- Authentication ----------------
@@ -28,11 +28,13 @@ class LoginSerializer(serializers.Serializer):
 
         user = None
         if username:
-            user = authenticate(request=self.context.get('request'), username=username, password=password)
+            user = authenticate(request=self.context.get('request'),
+                                username=username, password=password)
         elif email:
             try:
                 user_obj = User.objects.get(email__iexact=email)
-                user = authenticate(request=self.context.get('request'), username=user_obj.username, password=password)
+                user = authenticate(request=self.context.get('request'),
+                                    username=user_obj.username, password=password)
             except ObjectDoesNotExist:
                 pass
 
@@ -56,8 +58,14 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'role',
             'department', 'department_name',
             'division', 'division_name',
-            'specialization',   # ✅ add this
+            'specialization',   # ✅ include specialization
         ]
+
+    def get_department_name(self, obj):
+        return obj.department.name if obj.department else None
+
+    def get_division_name(self, obj):
+        return obj.division.name if obj.division else None
 
 
 class CreateUserSerializer(serializers.ModelSerializer):
@@ -66,7 +74,7 @@ class CreateUserSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'username', 'email', 'role',
             'department', 'division', 'password',
-            'specialization',   # ✅ add this
+            'specialization',
         ]
         extra_kwargs = {'password': {'write_only': True, 'required': True}}
 
@@ -76,7 +84,6 @@ class CreateUserSerializer(serializers.ModelSerializer):
         user.set_password(password)
         user.save()
         return user
-
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
@@ -115,19 +122,22 @@ class IngredientSerializer(serializers.ModelSerializer):
 
 class TestSerializer(serializers.ModelSerializer):
     ingredient = IngredientSerializer()
-    assigned_to_name = serializers.CharField(source='assigned_to.username', read_only=True)
+    assigned_to_name = serializers.CharField(source='assigned_to.username',
+                                             read_only=True)
 
     class Meta:
         model = Test
         fields = [
-            'id', 'sample', 'ingredient', 'assigned_to', 'assigned_to_name',
-            'results', 'price', 'status'
+            'id', 'sample', 'ingredient', 'assigned_to',
+            'assigned_to_name', 'results', 'price', 'status'
         ]
 
 
 class SimpleTestSerializer(serializers.ModelSerializer):
     ingredient_name = serializers.CharField(source='ingredient.name', read_only=True)
-    ingredient_price = serializers.DecimalField(source='ingredient.price', max_digits=12, decimal_places=2, read_only=True)
+    ingredient_price = serializers.DecimalField(source='ingredient.price',
+                                                max_digits=12, decimal_places=2,
+                                                read_only=True)
 
     class Meta:
         model = Test
@@ -136,7 +146,8 @@ class SimpleTestSerializer(serializers.ModelSerializer):
 
 # ---------------- Payments / Results ----------------
 class PaymentSerializer(serializers.ModelSerializer):
-    sample_control_number = serializers.CharField(source='sample.control_number', read_only=True)
+    sample_control_number = serializers.CharField(source='sample.control_number',
+                                                  read_only=True)
 
     class Meta:
         model = Payment
@@ -144,8 +155,10 @@ class PaymentSerializer(serializers.ModelSerializer):
 
 
 class ResultSerializer(serializers.ModelSerializer):
-    test_ingredient_name = serializers.CharField(source='test.ingredient.name', read_only=True)
-    sample_control_number = serializers.CharField(source='test.sample.control_number', read_only=True)
+    test_ingredient_name = serializers.CharField(source='test.ingredient.name',
+                                                 read_only=True)
+    sample_control_number = serializers.CharField(source='test.sample.control_number',
+                                                  read_only=True)
 
     class Meta:
         model = Result
@@ -154,63 +167,132 @@ class ResultSerializer(serializers.ModelSerializer):
 
 # ---------------- Samples ----------------
 class UnclaimedSampleSerializer(serializers.ModelSerializer):
-    customer = CustomerSerializer(read_only=True)
+    customer_details = serializers.SerializerMethodField()
     payment = PaymentSerializer(read_only=True)
-    tests = SimpleTestSerializer(many=True, source='test_set', read_only=True)
-
-    full_customer_name = serializers.SerializerMethodField()
+    tests = SimpleTestSerializer(many=True, source="test_set", read_only=True)
     sample_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Sample
         fields = [
-            'id',
-            'sample_name',
-            'sample_details',
-            'status',
-            'date_received',
-            'customer',
-            'full_customer_name',
-            'payment',
-            'tests',
-            'control_number',
+            "id",
+            "sample_name",
+            "sample_details",
+            "status",
+            "date_received",
+            "customer_details",
+            "payment",
+            "tests",
+            "control_number",
         ]
 
-    def get_full_customer_name(self, obj):
-        if obj.customer:
-            return " ".join(filter(None, [
-                obj.customer.first_name,
-                obj.customer.middle_name,
-                obj.customer.last_name
-            ])).strip()
-        return None
+    def get_customer_details(self, obj):
+        customer = obj.customer
+        if not customer:
+            return None
+
+        if customer.is_organization:
+            return {
+                "type": "Organization",
+                "organization_name": customer.organization_name,
+                "organization_id": customer.organization_id,
+                "country": customer.country,
+                "region": customer.region,
+                "street": customer.street,
+                "phone": f"{customer.phone_country_code or ''}{customer.phone_number or ''}".strip(),
+                "email": customer.email,
+            }
+
+        full_name = " ".join(filter(None, [
+            customer.first_name,
+            customer.middle_name,
+            customer.last_name,
+        ])).strip() or "Unnamed Customer"
+
+        return {
+            "type": "Individual",
+            "full_name": full_name,
+            "national_id": customer.national_id,
+            "country": customer.country,
+            "region": customer.region,
+            "street": customer.street,
+            "phone": f"{customer.phone_country_code or ''}{customer.phone_number or ''}".strip(),
+            "email": customer.email,
+        }
 
     def get_sample_name(self, obj):
-        return getattr(obj, 'sample_name', None) or obj.sample_details or obj.control_number
+        return (
+            getattr(obj, "sample_name", None)
+            or obj.sample_details
+            or obj.control_number
+        )
+
+
 
 
 class SampleDashboardSerializer(serializers.ModelSerializer):
-    customer = CustomerSerializer(read_only=True)
-    registrar_name = serializers.CharField(source='registrar.username', read_only=True)
-    payment_status = serializers.CharField(source='payment.status', read_only=True)
-    tests = TestSerializer(many=True, source='test_set', read_only=True)   # ✅ shows test list
-    sample_name = serializers.CharField(read_only=True)                   # ✅ added
+    customer_details = serializers.SerializerMethodField()
+    registrar_name = serializers.CharField(source="registrar.username", read_only=True)
+    payment_status = serializers.CharField(source="payment.status", read_only=True)
+    tests = TestSerializer(many=True, source="test_set", read_only=True)
+    sample_name = serializers.CharField(read_only=True)
 
     class Meta:
         model = Sample
         fields = [
-            'id', 'control_number', 'sample_name', 'sample_details',
-            'customer', 'registrar_name', 'date_received',
-            'status', 'payment_status', 'tests'
+            "id",
+            "control_number",
+            "sample_name",
+            "sample_details",
+            "customer_details",
+            "registrar_name",
+            "date_received",
+            "status",
+            "payment_status",
+            "tests",
         ]
+
+    def get_customer_details(self, obj):
+        customer = obj.customer
+        if not customer:
+            return None
+
+        if customer.is_organization:
+            return {
+                "type": "Organization",
+                "organization_name": customer.organization_name,
+                "organization_id": customer.organization_id,
+                "country": customer.country,
+                "region": customer.region,
+                "street": customer.street,
+                "phone": f"{customer.phone_country_code or ''}{customer.phone_number or ''}".strip(),
+                "email": customer.email,
+            }
+
+        full_name = " ".join(filter(None, [
+            customer.first_name,
+            customer.middle_name,
+            customer.last_name,
+        ])).strip() or "Unnamed Customer"
+
+        return {
+            "type": "Individual",
+            "full_name": full_name,
+            "national_id": customer.national_id,
+            "country": customer.country,
+            "region": customer.region,
+            "street": customer.street,
+            "phone": f"{customer.phone_country_code or ''}{customer.phone_number or ''}".strip(),
+            "email": customer.email,
+        }
 
 
 
 class FullSampleSerializer(serializers.ModelSerializer):
     customer = CustomerSerializer(read_only=True)
-    tests = TestSerializer(source="test_set", many=True, read_only=True)  # ✅ includes tests
+    tests = TestSerializer(source="test_set", many=True, read_only=True)
     payment = PaymentSerializer(read_only=True)
-    sample_name = serializers.CharField(read_only=True)                   # ✅ added
+    sample_name = serializers.CharField(read_only=True)
 
     class Meta:
         model = Sample
@@ -220,12 +302,7 @@ class FullSampleSerializer(serializers.ModelSerializer):
         ]
 
 
-
-
 # ---------------- Submission ----------------
-
-
-
 class RegisterCustomerSerializer(serializers.Serializer):
     first_name = serializers.CharField(required=True)
     middle_name = serializers.CharField(required=False, allow_blank=True)
@@ -238,7 +315,6 @@ class RegisterCustomerSerializer(serializers.Serializer):
     street = serializers.CharField(required=True)
     national_id = serializers.CharField(required=False, allow_blank=True)
 
-    # Organization fields
     is_organization = serializers.BooleanField(required=False, default=False)
     organization_name = serializers.CharField(required=False, allow_blank=True)
     organization_id = serializers.CharField(required=False, allow_blank=True)
@@ -251,8 +327,6 @@ class SampleSubmissionSerializer(serializers.Serializer):
         child=serializers.IntegerField(), allow_empty=False, required=True
     )
 
-
-# serializers.py
 
 class RegisterSampleSerializer(serializers.Serializer):
     customer = serializers.DictField(required=True)
@@ -290,7 +364,7 @@ class RegisterSampleSerializer(serializers.Serializer):
             sample = Sample.objects.create(
                 customer=customer,
                 registrar=request.user,
-                sample_name=sample_data.get("sample_name", ""),   # ✅ added
+                sample_name=sample_data.get("sample_name", ""),
                 sample_details=sample_data.get("sample_details", ""),
                 status="Awaiting HOD Review",
             )
@@ -310,13 +384,14 @@ class RegisterSampleSerializer(serializers.Serializer):
 
             created_samples.append(sample)
 
-        # --- Payment (for first sample, covers all tests + marking fee) ---
+        # --- Payment ---
         MARKING_FEE = Decimal("10000.00")
         all_ingredient_ids = [
             ing for s in samples_data for ing in s.get("selected_ingredients", [])
         ]
         total_ingredients_price = sum(
-            Ingredient.objects.filter(id__in=all_ingredient_ids).values_list("price", flat=True),
+            Ingredient.objects.filter(id__in=all_ingredient_ids)
+            .values_list("price", flat=True),
             Decimal("0.00"),
         )
         total_amount = (MARKING_FEE * Decimal(len(samples_data))) + total_ingredients_price
@@ -328,52 +403,38 @@ class RegisterSampleSerializer(serializers.Serializer):
             )
 
         return created_samples
-    
-
-    # myapp/serializers.py
-
-class TechnicianSampleSerializer(serializers.ModelSerializer):
-    customer_id = serializers.IntegerField(source="customer.id", read_only=True)
-    tests = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Sample
-        fields = ["id", "customer_id", "sample_name", "sample_details", "tests"]
-
-    def get_tests(self, obj):
-        return [
-            {
-                "id": t.id,
-                "ingredient_name": t.ingredient.name,
-                "ingredient_price": str(t.ingredient.price),
-                "test_type": t.ingredient.test_type,
-                "status": t.status,
-            }
-            for t in obj.test_set.all()
-        ]
 
 
-# serializers.py
-
+# ---------------- Technician View ----------------
 class TechnicianIngredientSerializer(serializers.ModelSerializer):
     class Meta:
         model = Ingredient
         fields = ["id", "name", "test_type"]
 
-class TechnicianTestSerializer(serializers.ModelSerializer):
+class TechnicianDashboardSerializer(serializers.ModelSerializer):
     ingredient = TechnicianIngredientSerializer()
+    sample = serializers.SerializerMethodField()
+    assigned_by_hod = serializers.SerializerMethodField()
 
     class Meta:
         model = Test
-        fields = ["id", "ingredient", "status"]
+        fields = ["id", "ingredient", "status", "sample", "assigned_by_hod"]
 
-class TechnicianSampleSerializer(serializers.ModelSerializer):
-    customer = serializers.SerializerMethodField()
-    tests = TechnicianTestSerializer(source="test_set", many=True)
+    def get_sample(self, obj):
+        sample = obj.sample
+        if not sample:
+            return None
+        return {
+            "id": sample.id,
+            "control_number": sample.control_number,
+            "sample_name": sample.sample_name,
+            "sample_details": sample.sample_details,
+            "date_received": sample.date_received,
+            "customer": {"id": sample.customer.id} if sample.customer else None,
+        }
 
-    class Meta:
-        model = Sample
-        fields = ["id", "sample_name", "sample_details", "customer", "tests"]
+    def get_assigned_by_hod(self, obj):
+        # TODO: if you store HOD assignment user, return that here
+        return {"name": "HOD"} if obj.sample else None
 
-    def get_customer(self, obj):
-        return {"id": obj.customer.id}
+

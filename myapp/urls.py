@@ -25,7 +25,7 @@ urlpatterns = [
     # Dashboards
     path('api/dashboard/admin/', api_views.admin_dashboard, name='admin_dashboard'),
     path('api/dashboard/registrar/', api_views.registrar_dashboard, name='registrar_dashboard'),
-    path('api/dashboard/technician/', api_views.technician_dashboard, name='technician_dashboard'),
+   path("api/technician/dashboard/", api_views.technician_dashboard, name="technician-dashboard"),
     path('api/dashboard/hod/', api_views.hod_dashboard, name='hod_dashboard'),
     path('api/dashboard/director/', api_views.director_dashboard, name='director_dashboard'),
 

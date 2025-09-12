@@ -26,7 +26,7 @@ from .serializers import (
     LoginSerializer, UserSerializer, DepartmentSerializer, DivisionSerializer,
     CustomerSerializer, SampleDashboardSerializer, TestSerializer, PaymentSerializer, ResultSerializer,
     IngredientSerializer, RegisterSampleSerializer, CreateUserSerializer, UnclaimedSampleSerializer,
-    FullSampleSerializer   # ✅ add this import
+    FullSampleSerializer, TechnicianDashboardSerializer    # ✅ add this import
 )
 
 logger = logging.getLogger(__name__)
@@ -43,104 +43,71 @@ class IsAdmin(BasePermission):
 # -------------------------------------------------------
 # Public: Customer submits samples without login
 # -------------------------------------------------------
-@method_decorator(csrf_exempt, name='dispatch')
+# views.py
+
+
 class CustomerSubmitSampleAPIView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
-    def post(self, request, *args, **kwargs):
-        with transaction.atomic():
-            try:
-                customer_data = request.data.get('customer')
-                samples_data = request.data.get('samples')
+    def post(self, request):
+        customer_data = request.data.get("customer", {})
+        samples_data = request.data.get("samples", [])
 
-                if not customer_data or not samples_data:
-                    return Response(
-                        {'error': 'Invalid payload'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
+        # Remove invalid keys
+        customer_data.pop("submission_date", None)
+        customer_data.pop("submission_time", None)
 
-                # --- Create or get User (linked to customer email) ---
-                username_candidate = (customer_data.get('email') or get_random_string(8)).split("@")[0]
-                user, _ = User.objects.get_or_create(
-                    email=customer_data.get('email'),
-                    defaults={
-                        'username': username_candidate,
-                        'role': 'Customer',
-                        'first_name': customer_data.get('first_name') or '',
-                        'last_name': customer_data.get('last_name') or '',
-                        'password': make_password(get_random_string(16))
-                    }
-                )
+        phone_number = customer_data.get("phone_number")
+        email = customer_data.get("email")
 
-                # --- Create or reuse Customer ---
-                customer, _ = Customer.objects.get_or_create(
-                    email=customer_data.get('email'),
-                    defaults={
-                        'first_name': customer_data.get('first_name', ''),
-                        'middle_name': customer_data.get('middle_name', ''),
-                        'last_name': customer_data.get('last_name', ''),
-                        'phone_country_code': customer_data.get('phone_country_code', ''),
-                        'phone_number': customer_data.get('phone_number', ''),
-                        'country': customer_data.get('country', ''),
-                        'region': customer_data.get('region', ''),
-                        'street': customer_data.get('street', ''),
-                        'national_id': customer_data.get('national_id', ''),
-                        'is_organization': customer_data.get('is_organization', False),
-                        'organization_name': customer_data.get('organization_name', ''),
-                        'organization_id': customer_data.get('organization_id', ''),
-                    }
-                )
+        # Try to get existing customer by phone_number OR email
+        customer = None
+        if phone_number:
+            customer = Customer.objects.filter(phone_number=phone_number).first()
+        if not customer and email:
+            customer = Customer.objects.filter(email=email).first()
 
-                created_samples = []
-                created_sample_objs = []
+        if customer:
+            # Update details if customer already exists
+            for field, value in customer_data.items():
+                setattr(customer, field, value)
+            customer.save()
+        else:
+            # Create new customer
+            customer = Customer.objects.create(**customer_data)
 
-                # --- Loop through submitted samples ---
-                for sample_data in samples_data:
-                    new_sample = Sample.objects.create(
-                        customer=customer,
-                        sample_details=sample_data.get('sample_details') or '',
-                        status='Awaiting Registrar Approval',
-                    )
+        # ---- Save Samples ----
+        saved_samples = []
+        for sample_data in samples_data:
+            sample = Sample.objects.create(
+                customer=customer,
+                sample_name=sample_data.get("name"),
+                sample_details=sample_data.get("sample_details", ""),
+                status="Awaiting Registrar Approval",
+                date_received=timezone.now(),
+            )
 
-                    # --- Calculate total ---
-                    total_amount = Decimal("0.00")
-                    for ing_id in sample_data.get('selected_ingredients', []):  # ✅ match frontend key
-                        try:
-                            ingredient = Ingredient.objects.get(id=ing_id)
-                            Test.objects.create(
-                                sample=new_sample,
-                                ingredient=ingredient,
-                                price=ingredient.price,
-                                status='Pending'
-                            )
-                            total_amount += ingredient.price
-                        except Ingredient.DoesNotExist:
-                            logger.warning(f"Ingredient {ing_id} not found for sample {new_sample.id}")
+            # Create related tests
+            for ing_id in sample_data.get("selected_parameters", []):
+                Test.objects.create(sample=sample, ingredient_id=ing_id)
 
-                    MARKING_LABEL_FEE = Decimal("10000.00")
-                    total_amount += MARKING_LABEL_FEE
+            # Create payment
+            Payment.objects.create(
+                sample=sample,
+                amount_due=sample_data.get("marking_label_fee", 0) + sum(
+                    Ingredient.objects.filter(
+                        id__in=sample_data["selected_parameters"]
+                    ).values_list("price", flat=True)
+                ),
+                status="Pending",
+            )
 
-                    # --- Create Payment ---
-                    Payment.objects.create(
-                        sample=new_sample,
-                        amount_due=total_amount,
-                        status='Pending'
-                    )
+            saved_samples.append(sample)
 
-                    created_samples.append(new_sample.id)
-                    created_sample_objs.append(new_sample)
-
-                return Response({
-                    'message': 'Samples submitted successfully.',
-                    'sample_ids': created_samples,
-                    'samples': SampleDashboardSerializer(created_sample_objs, many=True).data
-                }, status=status.HTTP_201_CREATED)
-
-            except Exception as e:
-                logger.error(f"Error in CustomerSubmitSampleAPIView: {str(e)}", exc_info=True)
-                return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
+        return Response(
+            {"success": True, "message": "Sample submitted successfully. Awaiting Registrar approval."},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 
@@ -305,42 +272,22 @@ def registrar_register_sample(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def registrar_submit_to_hod(request, sample_id):
-    """
-    Registrar submits a claimed sample to Head of Department (HOD).
-    """
     if request.user.role != 'Registrar':
-        return Response(
-            {'success': False, 'message': 'Access denied. Registrar role required.'},
-            status=status.HTTP_403_FORBIDDEN
-        )
+        return Response({'success': False, 'message': 'Access denied. Registrar role required.'}, status=403)
 
     try:
-        sample = Sample.objects.get(id=sample_id, registrar=request.user)
-
-        if sample.status != 'Registrar Claimed':
-            return Response(
-                {'success': False, 'message': 'Only claimed samples can be submitted to HOD.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Update status for HOD
+        sample = Sample.objects.get(id=sample_id, registrar=request.user, status='Registrar Claimed')
         sample.status = 'Submitted to HOD'
+        sample.date_submitted_to_hod = timezone.now()
         sample.save()
-
-        return Response(
-            {
-                'success': True,
-                'message': f"Sample {sample.id} submitted to HOD successfully.",
-                'sample': SampleDashboardSerializer(sample).data
-            },
-            status=status.HTTP_200_OK
-        )
-
+        return Response({
+            'success': True,
+            'message': f"Sample {sample.id} submitted to HOD successfully.",
+            'sample': SampleDashboardSerializer(sample).data
+        }, status=200)
     except Sample.DoesNotExist:
-        return Response(
-            {'success': False, 'message': 'Sample not found or not assigned to this Registrar.'},
-            status=status.HTTP_404_NOT_FOUND
-        )
+        return Response({'success': False, 'message': 'Sample not found or not claimed by this registrar.'}, status=404)
+
 
 
 
@@ -357,12 +304,13 @@ def registrar_claim_sample(request, sample_id):
     try:
         sample = Sample.objects.get(id=sample_id, status='Awaiting Registrar Approval', registrar__isnull=True)
         sample.registrar = request.user
-        sample.status = 'Registrar Claimed'
+        sample.status = 'Submitted to HOD'    # ✅ directly mark for HOD
+        sample.date_submitted_to_hod = timezone.now()  # ✅ add timestamp if field exists
         sample.save()
 
         return Response({
             'success': True,
-            'message': f"Sample {sample.id} claimed successfully.",
+            'message': f"Sample {sample.id} claimed and submitted to HOD successfully.",
             'sample': SampleDashboardSerializer(sample).data
         }, status=status.HTTP_200_OK)
 
@@ -372,7 +320,9 @@ def registrar_claim_sample(request, sample_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    
+    return Response({"success": True, "message": "Sample successfully claimed."})
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def unclaimed_samples(request):
@@ -380,12 +330,16 @@ def unclaimed_samples(request):
     Returns all samples that are not yet claimed by a Registrar.
     """
     samples = Sample.objects.filter(
-        status='Registered',
+        status='Awaiting Registrar Approval',   # ✅ ensures customer-submitted samples are shown
         registrar__isnull=True
     ).select_related('customer').prefetch_related('payment', 'test_set__ingredient')
 
     serializer = UnclaimedSampleSerializer(samples, many=True)
     return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+
+
 
 
 @api_view(['GET'])
@@ -427,18 +381,28 @@ def hod_assign_technician(request, sample_id):
     except Sample.DoesNotExist:
         return Response({"success": False, "message": "Sample not found."}, status=404)
 
-    # Assign each test to chosen technician(s)
-    for t_id in test_ids:
+    # Loop through each selected technician
+    for tech_id in technician_ids:
         try:
-            test = Test.objects.get(id=t_id, sample=sample)
-            # Assign to first technician (or loop for multiple)
-            for tech_id in technician_ids:
-                technician = User.objects.get(id=tech_id, role="Technician")
-                test.assigned_to = technician
-                test.status = "In Progress"
-                test.save()
-        except Test.DoesNotExist:
+            technician = User.objects.get(id=tech_id, role="Technician")
+        except User.DoesNotExist:
             continue
+
+        specialization = getattr(technician, "specialization", None)  # 👈 added field in User
+        if not specialization:
+            continue
+
+        # Assign only tests that match technician's specialization
+        tests = Test.objects.filter(
+            id__in=test_ids,
+            sample=sample,
+            ingredient__test_type=specialization
+        )
+
+        for test in tests:
+            test.assigned_to = technician
+            test.status = "In Progress"
+            test.save()
 
     sample.status = "In Progress"
     sample.save()
@@ -450,15 +414,25 @@ def hod_assign_technician(request, sample_id):
     }, status=200)
 
 
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_technicians(request):
+    """
+    Return all technicians, optionally filtered by specialization.
+    Example: /api/technicians/?specialization=Chemistry
+    """
     if request.user.role not in ['Admin', 'HOD']:
         return Response({"success": False, "message": "Access denied."}, status=403)
 
+    specialization = request.GET.get("specialization")  # optional filter
     technicians = User.objects.filter(role="Technician")
-    return Response(UserSerializer(technicians, many=True).data)
 
+    if specialization:
+        technicians = technicians.filter(specialization=specialization)
+
+    serializer = UserSerializer(technicians, many=True)
+    return Response(serializer.data)
 
 
 
@@ -470,30 +444,14 @@ def list_technicians(request):
 @permission_classes([IsAuthenticated])
 def technician_dashboard(request):
     if request.user.role != 'Technician':
-        return Response(
-            {'success': False, 'message': 'Access denied. Technician role required.'},
-            status=403
-        )
+        return Response({'success': False, 'message': 'Access denied. Technician role required.'}, status=403)
 
-    # Find all samples where this technician has assigned tests
-    assigned_tests = Test.objects.filter(assigned_to=request.user).select_related("sample", "ingredient")
-    sample_ids = assigned_tests.values_list("sample_id", flat=True).distinct()
-    samples = Sample.objects.filter(id__in=sample_ids).prefetch_related("test_set__ingredient")
-
-    return Response(
-        {"success": True, "samples": TechnicianSampleSerializer(samples, many=True).data},
-        status=200
-    )
+    assigned = Test.objects.filter(assigned_to=request.user)
+    return Response({'success': True, 'tests': TechnicianDashboardSerializer(assigned, many=True).data})
 
 
-    submitted_samples = Sample.objects.filter(
-        Q(status='Submitted to HOD') | Q(status='Awaiting HOD Review')
-    ).select_related('customer', 'registrar', 'payment').prefetch_related('test_set__ingredient')
 
-    return Response({
-        'success': True,
-        'samples': FullSampleSerializer(submitted_samples, many=True).data
-    }, status=status.HTTP_200_OK)
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
