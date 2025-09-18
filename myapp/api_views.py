@@ -18,6 +18,14 @@ from django.core.mail import send_mail
 from django.db.models import Q
 from django.utils.crypto import get_random_string
 from django.urls import reverse
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.encoding import force_bytes, force_str
+from django.conf import settings
+from rest_framework.permissions import IsAuthenticated
+
+
+
 
 from .models import (
     User, Department, Division, Customer, Sample, Test, Payment, Result, Ingredient, VerificationToken
@@ -26,7 +34,7 @@ from .serializers import (
     LoginSerializer, UserSerializer, DepartmentSerializer, DivisionSerializer,
     CustomerSerializer, SampleDashboardSerializer, TestSerializer, PaymentSerializer, ResultSerializer,
     IngredientSerializer, RegisterSampleSerializer, CreateUserSerializer, UnclaimedSampleSerializer,
-    FullSampleSerializer, TechnicianDashboardSerializer    # ✅ add this import
+    FullSampleSerializer, TechnicianDashboardSerializer,    # ✅ add this import
 )
 
 logger = logging.getLogger(__name__)
@@ -35,6 +43,14 @@ logger = logging.getLogger(__name__)
 class IsAdmin(BasePermission):
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role == 'Admin'
+    
+
+    # Add get_current_user view
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_current_user(request):
+    serializer = UserSerializer(request.user)
+    return Response(serializer.data)
 
 
 # -------------------------------------------------------
@@ -53,51 +69,50 @@ class CustomerSubmitSampleAPIView(APIView):
         customer_data = request.data.get("customer", {})
         samples_data = request.data.get("samples", [])
 
-        # Remove invalid keys
+        # Clean invalid fields
         customer_data.pop("submission_date", None)
         customer_data.pop("submission_time", None)
 
-        phone_number = customer_data.get("phone_number")
         email = customer_data.get("email")
+        phone = customer_data.get("phone_number")
 
-        # Try to get existing customer by phone_number OR email
+        # Try to find customer by email or phone
         customer = None
-        if phone_number:
-            customer = Customer.objects.filter(phone_number=phone_number).first()
-        if not customer and email:
+        if email:
             customer = Customer.objects.filter(email=email).first()
+        if not customer and phone:
+            customer = Customer.objects.filter(phone_number=phone).first()
 
-        if customer:
-            # Update details if customer already exists
-            for field, value in customer_data.items():
-                setattr(customer, field, value)
-            customer.save()
-        else:
-            # Create new customer
+        # If not found, create new
+        if not customer:
             customer = Customer.objects.create(**customer_data)
+        else:
+            # Update existing customer details
+            for field, value in customer_data.items():
+                if value not in [None, ""]:
+                    setattr(customer, field, value)
+            customer.save()
 
-        # ---- Save Samples ----
         saved_samples = []
         for sample_data in samples_data:
             sample = Sample.objects.create(
                 customer=customer,
-                sample_name=sample_data.get("name"),
+                sample_name=sample_data.get("name", ""),
                 sample_details=sample_data.get("sample_details", ""),
                 status="Awaiting Registrar Approval",
-                date_received=timezone.now(),
+                date_received=timezone.now()
             )
 
-            # Create related tests
+            # Related tests
             for ing_id in sample_data.get("selected_parameters", []):
                 Test.objects.create(sample=sample, ingredient_id=ing_id)
 
-            # Create payment
+            # Payment
             Payment.objects.create(
                 sample=sample,
                 amount_due=sample_data.get("marking_label_fee", 0) + sum(
-                    Ingredient.objects.filter(
-                        id__in=sample_data["selected_parameters"]
-                    ).values_list("price", flat=True)
+                    Ingredient.objects.filter(id__in=sample_data.get("selected_parameters", []))
+                    .values_list("price", flat=True)
                 ),
                 status="Pending",
             )
@@ -106,8 +121,82 @@ class CustomerSubmitSampleAPIView(APIView):
 
         return Response(
             {"success": True, "message": "Sample submitted successfully. Awaiting Registrar approval."},
-            status=status.HTTP_201_CREATED,
+            status=status.HTTP_201_CREATED
         )
+    
+
+
+# ------------------- Forgot Password -------------------
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def forgot_password_api(request):
+    email = request.data.get("email")
+    if not email:
+        return Response({"error": "Email is required"}, status=400)
+
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return Response({"error": "No account found with this email"}, status=404)
+
+    # Generate reset token
+    token = get_random_string(50)
+    VerificationToken.objects.create(
+        user=user,
+        token=token,
+        expires_at=timezone.now() + timedelta(hours=1)  # token valid for 1 hour
+    )
+
+    reset_url = request.build_absolute_uri(
+        reverse("reset-password", kwargs={"token": token})
+    )
+
+    subject = "Reset Your Password - Zafiri Lab"
+    message = f"Hello {user.username},\n\nClick the link below to reset your password:\n{reset_url}\n\nIf you didn’t request this, please ignore."
+    send_mail(
+        subject,
+        message,
+        settings.EMAIL_HOST_USER,   # ✅ send using configured Gmail
+        [email],
+        fail_silently=False,
+    )
+
+    return Response({"message": "Password reset instructions sent to your email."}, status=200)
+
+
+# ------------------- Reset Password -------------------
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def reset_password_api(request, token):
+    new_password = request.data.get("password")
+    if not new_password:
+        return Response({"error": "Password is required"}, status=400)
+
+    try:
+        reset_token = VerificationToken.objects.get(token=token, expires_at__gt=timezone.now())
+    except VerificationToken.DoesNotExist:
+        return Response({"error": "Invalid or expired token"}, status=400)
+
+    user = reset_token.user
+    user.password = make_password(new_password)
+    user.save()
+
+    # Remove token so it cannot be reused
+    reset_token.delete()
+
+    # Send confirmation email
+    subject = "Your Password Has Been Reset"
+    message = f"Hello {user.username},\n\nYour password was successfully reset. If this wasn’t you, please contact support immediately."
+    send_mail(
+        subject,
+        message,
+        settings.EMAIL_HOST_USER,
+        [user.email],
+        fail_silently=False,
+    )
+
+    return Response({"message": "Password reset successfully. You can now log in."}, status=200)
+
 
 
 
@@ -302,15 +391,18 @@ def registrar_claim_sample(request, sample_id):
         )
 
     try:
-        sample = Sample.objects.get(id=sample_id, status='Awaiting Registrar Approval', registrar__isnull=True)
+        sample = Sample.objects.get(
+            id=sample_id,
+            status='Awaiting Registrar Approval',
+            registrar__isnull=True
+        )
         sample.registrar = request.user
-        sample.status = 'Submitted to HOD'    # ✅ directly mark for HOD
-        sample.date_submitted_to_hod = timezone.now()  # ✅ add timestamp if field exists
+        sample.status = 'Registrar Claimed'   # 👈 FIXED (was "Submitted to HOD")
         sample.save()
 
         return Response({
             'success': True,
-            'message': f"Sample {sample.id} claimed and submitted to HOD successfully.",
+            'message': f"Sample {sample.id} claimed successfully. Now waiting to be submitted to HOD.",
             'sample': SampleDashboardSerializer(sample).data
         }, status=status.HTTP_200_OK)
 
@@ -320,7 +412,8 @@ def registrar_claim_sample(request, sample_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    return Response({"success": True, "message": "Sample successfully claimed."})
+
+
 
 
 @api_view(['GET'])
@@ -342,23 +435,24 @@ def unclaimed_samples(request):
 
 
 
-@api_view(['GET'])
+@api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def hod_dashboard(request):
     """
-    HOD views all submitted samples with full details.
+    Head of Department dashboard – view all samples submitted by registrar.
+    Shows only samples with status 'Submitted to HOD' or 'Awaiting HOD Review'.
     """
-    if request.user.role != 'HOD':
-        return Response({'success': False, 'message': 'Access denied. HOD role required.'}, status=403)
+    samples = (
+        Sample.objects.filter(
+            Q(status__iexact="Submitted to HOD") |
+            Q(status__iexact="Awaiting HOD Review")
+        )
+        .select_related("customer")
+        .prefetch_related("test_set__ingredient")
+    )
 
-    samples = Sample.objects.filter(
-        Q(status='Submitted to HOD') | Q(status='Awaiting HOD Review')
-    ).select_related('customer').prefetch_related('test_set__ingredient')
-
-    return Response({
-        'success': True,
-        'samples': FullSampleSerializer(samples, many=True).data
-    }, status=200)
+    serializer = FullSampleSerializer(samples, many=True)
+    return Response(serializer.data)  
 
 
 @api_view(['POST'])
@@ -451,14 +545,208 @@ def technician_dashboard(request):
 
 
 
+# api_views.py
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def technician_submit_result(request, test_id):
+    """
+    Technician submits test results -> moves to HOD review if all tests done.
+    """
+    if request.user.role != 'Technician':
+        return Response(
+            {"success": False, "message": "Access denied. Technician role required."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    try:
+        test = Test.objects.get(id=test_id, assigned_to=request.user)
+    except Test.DoesNotExist:
+        return Response(
+            {"success": False, "message": "Test not found or not assigned to you."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    results = request.data.get("results")
+    if not results:
+        return Response(
+            {"success": False, "message": "Results are required."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Save test result
+    test.results = results
+    test.status = "Awaiting HOD Review"
+    test.submitted_date = timezone.now()
+    test.save()
+
+    # Check if all tests for the sample are submitted
+    sample = test.sample
+    all_submitted = sample.test_set.filter(
+        status__in=["Pending", "In Progress"]
+    ).count() == 0
+
+    if all_submitted:
+        sample.status = "Awaiting HOD Review"
+        sample.save()
+
+    return Response({
+        "success": True,
+        "message": f"Results for test {test.id} submitted to HOD successfully.",
+        "sample": FullSampleSerializer(sample).data  # ✅ includes customer info & contact
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def hod_submit_to_director(request, sample_id):
+    """
+    HOD submits reviewed test results to Director.
+    """
+    if request.user.role != 'HOD':
+        return Response(
+            {"success": False, "message": "Access denied. HOD role required."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    try:
+        sample = Sample.objects.get(id=sample_id, status="Awaiting HOD Review")
+    except Sample.DoesNotExist:
+        return Response(
+            {"success": False, "message": "Sample not found or not ready for submission."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    sample.status = "Submitted to Director"
+    sample.date_submitted_to_director = timezone.now()
+    sample.save()
+
+    return Response({
+        "success": True,
+        "message": f"Sample {sample.id} submitted to Director successfully.",
+        "sample": FullSampleSerializer(sample).data
+    }, status=status.HTTP_200_OK)
+
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def director_dashboard(request):
+def dg_dashboard(request):
     if request.user.role != 'Director':
-        return Response({'success': False, 'message': 'Access denied. Director role required.'}, status=403)
-    return Response({'success': True, 'message': 'Director dashboard data here'})
+        return Response({"success": False, "message": "Access denied. Director role required."}, status=403)
+    try:
+        samples = Sample.objects.prefetch_related('test_set').filter(test_set__status="Awaiting DG Review").distinct()
+        serializer = FullSampleSerializer(samples, many=True)
+        return Response(serializer.data, status=200)
+    except Exception as e:
+        return Response({"success": False, "message": str(e)}, status=500)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def dg_approve_result(request, test_id):
+    if request.user.role not in ['Director', 'Director General']:
+        return Response(
+            {"success": False, "message": "Access denied. Director role required."},
+            status=403
+        )
+
+    try:
+        test = Test.objects.get(id=test_id, status="Awaiting DG Review")
+        test.status = "Approved"
+        test.approved_by = request.user
+        test.approved_date = timezone.now()
+        test.save()
+        return Response(
+            {"success": True, "message": "Test approved by Director."},
+            status=200
+        )
+    except Test.DoesNotExist:
+        return Response(
+            {"success": False, "message": "Test not found or not awaiting DG review."},
+            status=404
+        )
+ # Fixed: Removed extra )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def hod_reject_result(request, test_id):
+    if request.user.role != 'HOD':
+        return Response({"success": False, "message": "Access denied. HOD role required."}, status=403)
+    try:
+        test = Test.objects.get(id=test_id, status="Awaiting HOD Review")
+        reassigned_to_id = request.data.get("reassigned_to")
+        if not reassigned_to_id:
+            return Response({"success": False, "message": "Technician ID required for reassignment."}, status=400)
+        try:
+            technician = User.objects.get(id=reassigned_to_id, role="Technician", specialization=test.ingredient.test_type)
+        except User.DoesNotExist:
+            return Response({"success": False, "message": "Invalid technician or specialization mismatch."}, status=400)
+        test.status = "Pending"
+        test.assigned_to = technician
+        test.save()
+        return Response({"success": True, "message": "Test rejected and reassigned successfully."}, status=200)
+    except Test.DoesNotExist:
+        return Response({"success": False, "message": "Test not found or not awaiting HOD review."}, status=404)
+    
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def hod_accept_result(request, test_id):
+    if request.user.role != 'HOD':
+        return Response({"success": False, "message": "Access denied. HOD role required."}, status=403)
+    try:
+        test = Test.objects.get(id=test_id, status="Awaiting HOD Review")
+        test.status = "Awaiting DG Review"
+        test.approved_by = request.user
+        test.approved_date = timezone.now()
+        test.save()
+        return Response({"success": True, "message": "Test approved and submitted to Director."}, status=200)
+    except Test.DoesNotExist:
+        return Response({"success": False, "message": "Test not found or not awaiting HOD review."}, status=404)
+    
+
+
+
+
+# Existing views (e.g., hod_dashboard, hod_accept_result, hod_reject_result, get_technicians)
+# Add these new views for DG dashboard
+
+# Remove the second instance of dg_dashboard and dg_approve_result
+# Keep only one instance, and add dg_reject_result for completeness
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def dg_dashboard(request):
+    if request.user.role != 'Director General':
+        return Response({"success": False, "message": "Access denied. Director role required."}, status=403)
+    try:
+        samples = Sample.objects.prefetch_related('test_set').filter(test_set__status="Awaiting DG Review").distinct()
+        serializer = FullSampleSerializer(samples, many=True)
+        return Response(serializer.data, status=200)
+    except Exception as e:
+        return Response({"success": False, "message": str(e)}, status=500)
+
+
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def submit_to_director(request, test_id):
+    if request.user.role != 'HOD':
+        return Response({"success": False, "message": "Access denied. HOD role required."}, status=403)
+    try:
+        test = Test.objects.get(id=test_id, status="Awaiting HOD Review")
+        test.status = "Awaiting DG Review"
+        test.approved_by = request.user
+        test.approved_date = timezone.now()
+        test.save()
+        return Response({"success": True, "message": "Test submitted to Director successfully."}, status=200)
+    except Test.DoesNotExist:
+        return Response({"success": False, "message": "Test not found or not awaiting HOD review."}, status=404)
+    
+
+
+    
 
 
 # ViewSets

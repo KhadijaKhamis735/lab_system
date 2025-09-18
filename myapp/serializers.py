@@ -5,6 +5,12 @@ from django.contrib.auth import authenticate
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.core.mail import send_mail
+from django.conf import settings
+
 from .models import (
     User, Department, Division, Customer, Sample,
     Test, Payment, Result, Ingredient
@@ -99,7 +105,11 @@ class DivisionSerializer(serializers.ModelSerializer):
 
 
 # ---------------- Customers ----------------
+# serializers.py
+
 class CustomerSerializer(serializers.ModelSerializer):
+    phone_number = serializers.SerializerMethodField()
+
     class Meta:
         model = Customer
         fields = [
@@ -112,6 +122,15 @@ class CustomerSerializer(serializers.ModelSerializer):
             'email',
         ]
 
+    def get_phone_number(self, obj):
+        try:
+            return str(obj.phone_number) if obj.phone_number else None
+        except Exception:
+            # In case of InvalidPhoneNumber or bad formatting
+            return str(obj.phone_number.raw_input) if obj.phone_number else None
+
+
+
 
 # ---------------- Ingredients / Tests ----------------
 class IngredientSerializer(serializers.ModelSerializer):
@@ -122,15 +141,29 @@ class IngredientSerializer(serializers.ModelSerializer):
 
 class TestSerializer(serializers.ModelSerializer):
     ingredient = IngredientSerializer()
-    assigned_to_name = serializers.CharField(source='assigned_to.username',
-                                             read_only=True)
+    assigned_to_name = serializers.CharField(source='assigned_to.username', read_only=True)
+    sample = serializers.SerializerMethodField()
 
     class Meta:
         model = Test
         fields = [
             'id', 'sample', 'ingredient', 'assigned_to',
-            'assigned_to_name', 'results', 'price', 'status'
+            'assigned_to_name', 'results', 'price', 'status', 'submitted_date'
         ]
+
+    def get_sample(self, obj):
+        sample = obj.sample
+        if not sample:
+            return None
+        return {
+            "id": sample.id,
+            "sample_name": sample.sample_name,
+            "sample_details": sample.sample_details,
+            "date_received": sample.date_received,
+            "registrar_name": sample.registrar.username if sample.registrar else None,
+            "control_number": sample.control_number,
+            "laboratory_number": sample.laboratory_number,  # Added
+        }
 
 
 class SimpleTestSerializer(serializers.ModelSerializer):
@@ -191,6 +224,12 @@ class UnclaimedSampleSerializer(serializers.ModelSerializer):
         if not customer:
             return None
 
+        # Safe phone string
+        try:
+            phone = str(customer.phone_number) if customer.phone_number else None
+        except Exception:
+            phone = getattr(customer.phone_number, "raw_input", None)
+
         if customer.is_organization:
             return {
                 "type": "Organization",
@@ -199,24 +238,22 @@ class UnclaimedSampleSerializer(serializers.ModelSerializer):
                 "country": customer.country,
                 "region": customer.region,
                 "street": customer.street,
-                "phone": f"{customer.phone_country_code or ''}{customer.phone_number or ''}".strip(),
+                "phone_country_code": customer.phone_country_code,
+                "phone_number": phone,
                 "email": customer.email,
             }
 
-        full_name = " ".join(filter(None, [
-            customer.first_name,
-            customer.middle_name,
-            customer.last_name,
-        ])).strip() or "Unnamed Customer"
-
         return {
             "type": "Individual",
-            "full_name": full_name,
+            "first_name": customer.first_name,
+            "middle_name": customer.middle_name,
+            "last_name": customer.last_name,
             "national_id": customer.national_id,
             "country": customer.country,
             "region": customer.region,
             "street": customer.street,
-            "phone": f"{customer.phone_country_code or ''}{customer.phone_number or ''}".strip(),
+            "phone_country_code": customer.phone_country_code,
+            "phone_number": phone,
             "email": customer.email,
         }
 
@@ -226,6 +263,11 @@ class UnclaimedSampleSerializer(serializers.ModelSerializer):
             or obj.sample_details
             or obj.control_number
         )
+
+
+
+
+
 
 
 
@@ -293,13 +335,22 @@ class FullSampleSerializer(serializers.ModelSerializer):
     tests = TestSerializer(source="test_set", many=True, read_only=True)
     payment = PaymentSerializer(read_only=True)
     sample_name = serializers.CharField(read_only=True)
+    claimed_by = serializers.SerializerMethodField()
 
     class Meta:
         model = Sample
         fields = [
-            "id", "control_number", "sample_name", "sample_details",
-            "status", "date_received", "customer", "tests", "payment",
+            "id", "control_number", "laboratory_number", "sample_name", "sample_details",
+            "status", "date_received", "customer", "tests", "payment", "claimed_by",
         ]
+
+    def get_claimed_by(self, obj):
+        if obj.registrar:
+            return {"id": obj.registrar.id, "username": obj.registrar.username}
+        return None
+
+
+
 
 
 # ---------------- Submission ----------------
@@ -426,15 +477,78 @@ class TechnicianDashboardSerializer(serializers.ModelSerializer):
             return None
         return {
             "id": sample.id,
-            "control_number": sample.control_number,
             "sample_name": sample.sample_name,
-            "sample_details": sample.sample_details,
-            "date_received": sample.date_received,
+            "sample_details": sample.sample_details,   # ✅ Sample Details
+            "date_received": sample.date_received,     # ✅ Assigned Date
+            "registrar_name": sample.registrar.username if sample.registrar else None,  # ✅ Submitted By
             "customer": {"id": sample.customer.id} if sample.customer else None,
+            "control_number": sample.control_number,   # ✅ Use as Sample Code
         }
 
     def get_assigned_by_hod(self, obj):
-        # TODO: if you store HOD assignment user, return that here
-        return {"name": "HOD"} if obj.sample else None
+        return {
+            "name": obj.assigned_to.username if obj.assigned_to else "HOD"
+        }
+
+
+class ForgotPasswordSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        try:
+            user = User.objects.get(email=value)
+        except User.DoesNotExist:
+            raise serializers.ValidationError("No account found with this email.")
+        return value
+
+    def save(self):
+        email = self.validated_data['email']
+        user = User.objects.get(email=email)
+
+        # Generate token
+        token = PasswordResetTokenGenerator().make_token(user)
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+
+        reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
+
+        # Send email
+        send_mail(
+            "Password Reset Request",
+            f"Click the link to reset your password: {reset_link}",
+            settings.DEFAULT_FROM_EMAIL,
+            [email],
+            fail_silently=False,
+        )
+        return {"message": "Password reset instructions sent to email."}
+    
+
+    class ResetPasswordSerializer(serializers.Serializer):
+      uid = serializers.CharField()
+    token = serializers.CharField()
+    new_password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        try:
+            uid = force_str(urlsafe_base64_decode(data['uid']))
+            user = User.objects.get(pk=uid)
+        except (User.DoesNotExist, ValueError, TypeError):
+            raise serializers.ValidationError("Invalid UID")
+
+        if not PasswordResetTokenGenerator().check_token(user, data['token']):
+            raise serializers.ValidationError("Invalid or expired token")
+
+        data['user'] = user
+        return data
+
+    def save(self):
+        user = self.validated_data['user']
+        user.set_password(self.validated_data['new_password'])
+        user.save()
+        return {"message": "Password has been reset successfully."}
+
+
+
+
+
 
 

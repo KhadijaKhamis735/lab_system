@@ -4,6 +4,8 @@ from django.contrib.auth.models import AbstractUser
 from django.utils import timezone
 from phonenumber_field.modelfields import PhoneNumberField
 import logging
+# models.py
+from django.conf import settings
 
 from django.db import models
 
@@ -16,7 +18,7 @@ class User(AbstractUser):
         ('HOD', 'Head of Department'),
         ('HODv', 'Head of Division'),
         ('Technician', 'Laboratory Technician'),
-        ('Director', 'Director'),
+          ('Director', 'Director General'), 
     )
 
     SPECIALIZATION_CHOICES = (
@@ -75,13 +77,21 @@ class Customer(models.Model):
     phone_country_code = models.CharField(max_length=10, null=True, blank=True)
     phone_number = PhoneNumberField(null=True, blank=True)
 
-    email = models.EmailField(unique=True, null=True, blank=True)
+    email = models.EmailField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["phone_number", "email"],
+                name="unique_customer_phone_email"
+            )
+        ]
 
     def __str__(self):
-        # full name fallback
         if self.is_organization:
             return f"{self.organization_name} ({self.organization_id})"
         return f"{self.first_name} {self.last_name}".strip()
+
 
 
 class Ingredient(models.Model):
@@ -159,6 +169,8 @@ class Sample(models.Model):
         related_name="technician_samples"
     )
 
+    laboratory_number = models.CharField(max_length=50, unique=True, null=True, blank=True)  # ✅ new field
+
     # 🔹 Sample details
     sample_name = models.CharField(
         max_length=255,
@@ -182,8 +194,10 @@ class Test(models.Model):
     STATUS_CHOICES = (
         ('Pending', 'Pending'),
         ('In Progress', 'In Progress'),
+        ('Awaiting DG Review', 'Awaiting DG Review'),  # Added
         ('Awaiting HOD Review', 'Awaiting HOD Review'),
         ('Completed', 'Completed'),
+        ('Approved', 'Approved'),  # Added
     )
     sample = models.ForeignKey(Sample, on_delete=models.CASCADE, related_name='test_set')
     ingredient = models.ForeignKey(Ingredient, on_delete=models.CASCADE, null=True, blank=True)
@@ -227,11 +241,13 @@ class Result(models.Model):
         ingredient_name = self.test.ingredient.name if self.test and self.test.ingredient else "N/A"
         return f"Result for {self.sample.control_number} – {ingredient_name}"
 
+
+
 class VerificationToken(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    token = models.CharField(max_length=100)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    token = models.CharField(max_length=255, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
 
-    def __str__(self):
-        return f"Token for {self.user.username}"
+    def is_valid(self):
+        return timezone.now() < self.expires_at
